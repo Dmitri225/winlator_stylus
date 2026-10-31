@@ -295,6 +295,13 @@ public class InputControlsView extends View {
     }
 
     @Override
+    public android.view.PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
+        // overlay sits above TouchpadView: let it decide (hides the S Pen hover dot)
+        if (touchpadView != null) return touchpadView.onResolvePointerIcon(event, pointerIndex);
+        return super.onResolvePointerIcon(event, pointerIndex);
+    }
+
+    @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
         if (!editMode && profile != null) {
             ExternalController controller = profile.getController(event.getDeviceId());

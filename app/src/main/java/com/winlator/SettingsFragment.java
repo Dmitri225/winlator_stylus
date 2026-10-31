@@ -110,6 +110,15 @@ public class SettingsFragment extends Fragment {
         final CheckBox cbUseDRI3 = view.findViewById(R.id.CBUseDRI3);
         cbUseDRI3.setChecked(preferences.getBoolean("use_dri3", true));
 
+        final CheckBox cbStylusAbsoluteMode = view.findViewById(R.id.CBStylusAbsoluteMode);
+        cbStylusAbsoluteMode.setChecked(preferences.getBoolean("stylus_absolute_mode", true));
+        final CheckBox cbStylusLongPressRMB = view.findViewById(R.id.CBStylusLongPressRMB);
+        cbStylusLongPressRMB.setChecked(preferences.getBoolean("stylus_long_press_rmb", false));
+        final CheckBox cbStylusHoverButtonRMB = view.findViewById(R.id.CBStylusHoverButtonRMB);
+        cbStylusHoverButtonRMB.setChecked(preferences.getBoolean("stylus_hover_button_rmb", false));
+        final CheckBox cbStylusPalmRejection = view.findViewById(R.id.CBStylusPalmRejection);
+        cbStylusPalmRejection.setChecked(preferences.getBoolean("stylus_palm_rejection", true));
+
         final CheckBox cbEnableWineDebug = view.findViewById(R.id.CBEnableWineDebug);
         cbEnableWineDebug.setChecked(preferences.getBoolean("enable_wine_debug", false));
 
@@ -148,6 +157,10 @@ public class SettingsFragment extends Fragment {
             editor.putString("box86_preset", Box86_64PresetManager.getSpinnerSelectedId(sBox86Preset));
             editor.putString("box64_preset", Box86_64PresetManager.getSpinnerSelectedId(sBox64Preset));
             editor.putBoolean("use_dri3", cbUseDRI3.isChecked());
+            editor.putBoolean("stylus_absolute_mode", cbStylusAbsoluteMode.isChecked());
+            editor.putBoolean("stylus_long_press_rmb", cbStylusLongPressRMB.isChecked());
+            editor.putBoolean("stylus_hover_button_rmb", cbStylusHoverButtonRMB.isChecked());
+            editor.putBoolean("stylus_palm_rejection", cbStylusPalmRejection.isChecked());
             editor.putFloat("cursor_speed", sbCursorSpeed.getProgress() / 100.0f);
             editor.putBoolean("enable_wine_debug", cbEnableWineDebug.isChecked());
             editor.putBoolean("enable_box86_64_logs", cbEnableBox86_64Logs.isChecked());

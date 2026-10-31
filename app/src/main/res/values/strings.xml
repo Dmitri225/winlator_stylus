@@ -143,6 +143,10 @@
     <string name="target_path">Target Path</string>
     <string name="xserver">XServer</string>
     <string name="use_dri3_extension">Use DRI3 extension</string>
+    <string name="stylus_absolute_mode">Stylus as absolute mouse (S Pen)</string>
+    <string name="stylus_long_press_rmb">Stylus long press = right button</string>
+    <string name="stylus_hover_button_rmb">Stylus side button while hovering = right button</string>
+    <string name="stylus_palm_rejection">Ignore finger touches while using stylus</string>
     <string name="width">Width</string>
     <string name="height">Height</string>
     <string name="old">old</string>

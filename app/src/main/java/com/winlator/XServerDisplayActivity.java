@@ -477,6 +477,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         globalCursorSpeed = preferences.getFloat("cursor_speed", 1.0f);
         touchpadView = new TouchpadView(this, xServer);
         touchpadView.setSensitivity(globalCursorSpeed);
+        touchpadView.setStylusEnabled(preferences.getBoolean("stylus_absolute_mode", true));
+        touchpadView.setStylusLongPressRightClick(preferences.getBoolean("stylus_long_press_rmb", false));
+        touchpadView.setStylusHoverButtonRightClick(preferences.getBoolean("stylus_hover_button_rmb", false));
+        touchpadView.setStylusPalmRejection(preferences.getBoolean("stylus_palm_rejection", true));
         touchpadView.setFourFingersTapCallback(() -> {
             if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
         });

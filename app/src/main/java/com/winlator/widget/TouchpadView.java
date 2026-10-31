@@ -6,7 +6,9 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.view.InputDevice;
 import android.view.MotionEvent;
+import android.view.PointerIcon;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
@@ -39,6 +41,28 @@ public class TouchpadView extends View {
     private Runnable fourFingersTapCallback;
     private final float[] xform = XForm.getInstance();
 
+    // ---- Stylus (S Pen) support ----
+    public static final short STYLUS_LONG_PRESS_MILLISECONDS = 450;
+    public static final short STYLUS_PALM_REJECTION_MILLISECONDS = 300;
+    private boolean stylusEnabled = true;
+    private boolean stylusLongPressRightClick = false;
+    private boolean stylusHoverButtonRightClick = false;
+    private boolean stylusPalmRejection = true;
+    private Pointer.Button stylusTipButton = null;
+    private boolean stylusHoverButtonDown = false;
+    private boolean stylusTipDown = false;
+    private boolean stylusPendingLeft = false;
+    private float stylusDownX, stylusDownY;
+    private int stylusLastX = Integer.MIN_VALUE, stylusLastY = Integer.MIN_VALUE;
+    private long stylusLastEventTime = 0;
+    private final int touchSlop;
+    private final Runnable stylusLongPressRunnable = () -> {
+        if (stylusTipDown && stylusPendingLeft) {
+            stylusPendingLeft = false;
+            stylusPressTipButton(Pointer.Button.BUTTON_RIGHT);
+        }
+    };
+
     public TouchpadView(Context context, XServer xServer) {
         super(context);
         this.xServer = xServer;
@@ -47,6 +71,7 @@ public class TouchpadView extends View {
         setClickable(true);
         setFocusable(true);
         setFocusableInTouchMode(false);
+        touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
         updateXform(AppUtils.getScreenWidth(), AppUtils.getScreenHeight(), xServer.screenInfo.width, xServer.screenInfo.height);
     }
 
@@ -118,6 +143,22 @@ public class TouchpadView extends View {
         int actionIndex = event.getActionIndex();
         int pointerId = event.getPointerId(actionIndex);
         int actionMasked = event.getActionMasked();
+
+        if (stylusEnabled) {
+            if (actionMasked == MotionEvent.ACTION_CANCEL) {
+                if (stylusTipDown) handleStylusTouchEvent(event); // then fall through to reset fingers
+            }
+            else if (actionMasked == MotionEvent.ACTION_MOVE) {
+                if (stylusTipDown && findStylusPointerIndex(event) >= 0) return handleStylusTouchEvent(event);
+            }
+            else if (isStylusPointer(event, actionIndex)) {
+                return handleStylusTouchEvent(event);
+            }
+            else if (isFingerDownAction(actionMasked) && (stylusTipDown || (stylusPalmRejection && isStylusRecentlyActive()))) {
+                return true; // palm/finger touching the screen while the pen is in use
+            }
+        }
+
         if (pointerId >= MAX_FINGERS) return true;
 
         switch (actionMasked) {
@@ -298,6 +339,7 @@ public class TouchpadView extends View {
     }
 
     public boolean onExternalMouseEvent(MotionEvent event) {
+        if (stylusEnabled && isStylusPointer(event, 0)) return handleStylusGenericEvent(event);
         boolean handled = false;
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
             int actionButton = event.getActionButton();
@@ -356,6 +398,205 @@ public class TouchpadView extends View {
         result[0] = x - lastX;
         result[1] = y - lastY;
         return result;
+    }
+
+    // =====================================================================
+    // Stylus (S Pen) as an absolute pointing device
+    //   hover            -> pointer follows the pen tip (no buttons)
+    //   tip              -> LMB press/drag/release at the pen position
+    //   side button + tip-> RMB held while the tip touches (HoMM3 info popups)
+    //   long press (opt) -> RMB held, like the ExaGear touch mode
+    //   hover + side btn (opt) -> RMB without touching the screen
+    // =====================================================================
+
+    private static boolean isStylusPointer(MotionEvent event, int pointerIndex) {
+        if (pointerIndex < 0 || pointerIndex >= event.getPointerCount()) return false;
+        int toolType = event.getToolType(pointerIndex);
+        return toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER;
+    }
+
+    private static int findStylusPointerIndex(MotionEvent event) {
+        for (int i = 0, count = event.getPointerCount(); i < count; i++) {
+            if (isStylusPointer(event, i)) return i;
+        }
+        return -1;
+    }
+
+    private static boolean isFingerDownAction(int actionMasked) {
+        return actionMasked == MotionEvent.ACTION_DOWN || actionMasked == MotionEvent.ACTION_POINTER_DOWN;
+    }
+
+    private static boolean isStylusSideButtonPressed(MotionEvent event) {
+        // BUTTON_SECONDARY: some firmwares/older Android versions report the pen button this way
+        return (event.getButtonState() & (MotionEvent.BUTTON_STYLUS_PRIMARY | MotionEvent.BUTTON_SECONDARY)) != 0;
+    }
+
+    private boolean isStylusRecentlyActive() {
+        return stylusTipDown || (System.currentTimeMillis() - stylusLastEventTime) < STYLUS_PALM_REJECTION_MILLISECONDS;
+    }
+
+    private void stylusMoveTo(float viewX, float viewY) {
+        float[] p = XForm.transformPoint(xform, viewX, viewY);
+        int x = (int)p[0];
+        int y = (int)p[1];
+        if (xServer.isRelativeMouseMovement()) {
+            if (stylusLastX != Integer.MIN_VALUE) {
+                int dx = x - stylusLastX;
+                int dy = y - stylusLastY;
+                if (dx != 0 || dy != 0) xServer.getWinHandler().mouseEvent(MouseEventFlags.MOVE, dx, dy, 0);
+            }
+        }
+        else if (x != stylusLastX || y != stylusLastY) {
+            xServer.injectPointerMove(x, y);
+        }
+        stylusLastX = x;
+        stylusLastY = y;
+    }
+
+    private void stylusPressTipButton(Pointer.Button button) {
+        stylusReleaseTipButton();
+        if (!xServer.pointer.isButtonPressed(button)) xServer.injectPointerButtonPress(button);
+        stylusTipButton = button;
+    }
+
+    private void stylusReleaseTipButton() {
+        if (stylusTipButton != null) {
+            if (xServer.pointer.isButtonPressed(stylusTipButton)) xServer.injectPointerButtonRelease(stylusTipButton);
+            stylusTipButton = null;
+        }
+    }
+
+    private void stylusClick(final Pointer.Button button) {
+        xServer.injectPointerButtonPress(button);
+        // same 30ms gap the touchpad uses, so games that poll button state don't miss the click
+        postDelayed(() -> xServer.injectPointerButtonRelease(button), 30);
+    }
+
+    private void stylusReleaseHoverButton() {
+        if (stylusHoverButtonDown) {
+            stylusHoverButtonDown = false;
+            if (xServer.pointer.isButtonPressed(Pointer.Button.BUTTON_RIGHT)) xServer.injectPointerButtonRelease(Pointer.Button.BUTTON_RIGHT);
+        }
+    }
+
+    private boolean handleStylusTouchEvent(MotionEvent event) {
+        stylusLastEventTime = System.currentTimeMillis();
+        int actionMasked = event.getActionMasked();
+        int index = (actionMasked == MotionEvent.ACTION_MOVE || actionMasked == MotionEvent.ACTION_CANCEL) ?
+            findStylusPointerIndex(event) : event.getActionIndex();
+        if (index < 0) return true;
+
+        float viewX = event.getX(index);
+        float viewY = event.getY(index);
+
+        switch (actionMasked) {
+            case MotionEvent.ACTION_DOWN:
+            case MotionEvent.ACTION_POINTER_DOWN:
+                removeCallbacks(stylusLongPressRunnable);
+                stylusReleaseHoverButton();
+                stylusTipDown = true;
+                stylusPendingLeft = false;
+                stylusDownX = viewX;
+                stylusDownY = viewY;
+                stylusMoveTo(viewX, viewY);
+
+                if (isStylusSideButtonPressed(event)) {
+                    stylusPressTipButton(Pointer.Button.BUTTON_RIGHT);
+                }
+                else if (event.getToolType(index) == MotionEvent.TOOL_TYPE_ERASER) {
+                    stylusPressTipButton(Pointer.Button.BUTTON_MIDDLE);
+                }
+                else if (stylusLongPressRightClick) {
+                    // defer LMB: becomes a drag on movement, a click on release, or RMB on long press
+                    stylusPendingLeft = true;
+                    postDelayed(stylusLongPressRunnable, STYLUS_LONG_PRESS_MILLISECONDS);
+                }
+                else {
+                    stylusPressTipButton(Pointer.Button.BUTTON_LEFT);
+                }
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if (!stylusTipDown) break;
+                stylusMoveTo(viewX, viewY);
+                if (stylusPendingLeft && Math.hypot(viewX - stylusDownX, viewY - stylusDownY) > touchSlop) {
+                    removeCallbacks(stylusLongPressRunnable);
+                    stylusPendingLeft = false;
+                    stylusPressTipButton(Pointer.Button.BUTTON_LEFT);
+                }
+                else if (stylusTipButton == Pointer.Button.BUTTON_LEFT && isStylusSideButtonPressed(event)) {
+                    // side button pressed after the tip already landed: switch to RMB
+                    stylusPressTipButton(Pointer.Button.BUTTON_RIGHT);
+                }
+                break;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_POINTER_UP:
+            case MotionEvent.ACTION_CANCEL:
+                removeCallbacks(stylusLongPressRunnable);
+                if (actionMasked != MotionEvent.ACTION_CANCEL) stylusMoveTo(viewX, viewY);
+                if (stylusPendingLeft && actionMasked != MotionEvent.ACTION_CANCEL) stylusClick(Pointer.Button.BUTTON_LEFT);
+                stylusPendingLeft = false;
+                stylusReleaseTipButton();
+                stylusTipDown = false;
+                break;
+        }
+        return true;
+    }
+
+    private boolean handleStylusGenericEvent(MotionEvent event) {
+        stylusLastEventTime = System.currentTimeMillis();
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_HOVER_ENTER:
+            case MotionEvent.ACTION_HOVER_MOVE:
+                if (!stylusTipDown) {
+                    stylusMoveTo(event.getX(), event.getY());
+                    if (stylusHoverButtonRightClick) {
+                        boolean pressed = isStylusSideButtonPressed(event);
+                        if (pressed && !stylusHoverButtonDown) {
+                            stylusHoverButtonDown = true;
+                            if (!xServer.pointer.isButtonPressed(Pointer.Button.BUTTON_RIGHT)) xServer.injectPointerButtonPress(Pointer.Button.BUTTON_RIGHT);
+                        }
+                        else if (!pressed) stylusReleaseHoverButton();
+                    }
+                }
+                return true;
+            case MotionEvent.ACTION_HOVER_EXIT:
+                stylusReleaseHoverButton();
+                if (!stylusTipDown) {
+                    stylusLastX = Integer.MIN_VALUE;
+                    stylusLastY = Integer.MIN_VALUE;
+                }
+                return true;
+            case MotionEvent.ACTION_BUTTON_PRESS:
+            case MotionEvent.ACTION_BUTTON_RELEASE:
+                // tip + button is handled in onTouchEvent (button state), hover + button above
+                return true;
+        }
+        return false;
+    }
+
+    @Override
+    public PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
+        // hide Samsung's hover dot: the X server already draws the Windows cursor
+        if (stylusEnabled && isStylusPointer(event, pointerIndex)) {
+            return PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_NULL);
+        }
+        return super.onResolvePointerIcon(event, pointerIndex);
+    }
+
+    public void setStylusEnabled(boolean stylusEnabled) {
+        this.stylusEnabled = stylusEnabled;
+    }
+
+    public void setStylusLongPressRightClick(boolean stylusLongPressRightClick) {
+        this.stylusLongPressRightClick = stylusLongPressRightClick;
+    }
+
+    public void setStylusHoverButtonRightClick(boolean stylusHoverButtonRightClick) {
+        this.stylusHoverButtonRightClick = stylusHoverButtonRightClick;
+    }
+
+    public void setStylusPalmRejection(boolean stylusPalmRejection) {
+        this.stylusPalmRejection = stylusPalmRejection;
     }
 
     private StateListDrawable createTransparentBg() {
