@@ -8,11 +8,21 @@ android {
         minSdkVersion 26
         targetSdkVersion 28
         versionCode 16
-        versionName "7.1"
+        versionName "10.1-spen"
+    }
+
+    signingConfigs {
+        spen {
+            storeFile rootProject.file('ci/winlator-spen.keystore')
+            storePassword 'winlator-spen'
+            keyAlias 'winlator-spen'
+            keyPassword 'winlator-spen'
+        }
     }
 
     buildTypes {
         debug {
+            signingConfig signingConfigs.spen
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
 

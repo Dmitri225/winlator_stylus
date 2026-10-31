@@ -1,0 +1,85 @@
+name: Build Winlator S Pen APK
+
+on:
+  push:
+    branches: [ spen-stylus ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      UPSTREAM_REPO: brunodev85/winlator
+      UPSTREAM_TAG: v10.1.0
+      # sha256 of app/src/main/assets/imagefs.txz at v10.1.0 (from the Git LFS pointer)
+      IMAGEFS_SHA256: 00a283c7d3e9ed2399b8d73175f92a3932b65e86925f7a5bd0fe0d4736e81e8a
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Get imagefs.txz (official APK first, Git LFS as fallback)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          dst=app/src/main/assets/imagefs.txz
+          mkdir -p /tmp/upstream && cd /tmp/upstream
+          if gh release download "$UPSTREAM_TAG" -R "$UPSTREAM_REPO" -p '*.apk'; then
+            apk=$(ls *.apk | head -1)
+            unzip -o -q "$apk" assets/imagefs.txz
+            got=$(sha256sum assets/imagefs.txz | cut -d' ' -f1)
+            echo "imagefs from APK: $got"
+            if [ "$got" = "$IMAGEFS_SHA256" ]; then
+              cp assets/imagefs.txz "$GITHUB_WORKSPACE/$dst"
+            fi
+          fi
+          cd "$GITHUB_WORKSPACE"
+          if [ "$(head -c 7 $dst)" = "version" ]; then
+            echo "Falling back to Git LFS"
+            git lfs install --local
+            git lfs pull --include="$dst"
+          fi
+          echo "$IMAGEFS_SHA256  $dst" | sha256sum -c -
+          ls -la "$dst"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install NDK and CMake
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-30" "build-tools;30.0.3" "ndk;22.1.7171670" "cmake;3.22.1" > /dev/null
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '7.6.4'
+
+      - name: Build APK
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Rename APK
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/*.apk "out/Winlator_10.1_SPen_${GITHUB_RUN_NUMBER}.apk"
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winlator-spen-apk
+          path: out/*.apk
+
+      - name: Publish release (easy download from phone)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="spen-build-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" out/*.apk -R "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "Winlator 10.1 + S Pen (build ${GITHUB_RUN_NUMBER})" \
+            --notes "Built from $GITHUB_SHA. Package com.winlator: uninstall official Winlator first (back up containers)."
