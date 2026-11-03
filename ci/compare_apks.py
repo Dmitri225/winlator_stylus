@@ -27,16 +27,21 @@ def digests(path):
             with z.open(info) as f:
                 for chunk in iter(lambda: f.read(1 << 20), b""):
                     h.update(chunk)
-            out[info.filename] = (h.hexdigest(), info.file_size)
+            # second digest with CRLF -> LF, to tell "line endings only" apart
+            data = z.read(info) if info.file_size < 8 << 20 else b""
+            n = hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest() if data else None
+            out[info.filename] = (h.hexdigest(), info.file_size, n)
     return out
 
 a, b = digests(ours), digests(official)
 expected = lambda n: any(fnmatch.fnmatch(n, p) for p in EXPECTED_DIFF)
 
-same, diff_expected, diff_unexpected = [], [], []
+same, diff_expected, diff_unexpected, diff_eol = [], [], [], []
 for name in sorted(set(a) & set(b)):
     if a[name][0] == b[name][0]:
         same.append(name)
+    elif a[name][2] and a[name][2] == b[name][2]:
+        diff_eol.append(name)
     elif expected(name):
         diff_expected.append(name)
     else:
@@ -55,6 +60,7 @@ lines = [
     f"- Entries in official:   {len(b)} ({size(b)/1e6:.1f} MB uncompressed)",
     f"- Byte-identical: **{len(same)}** "
     f"({sum(a[n][1] for n in same)/1e6:.1f} MB)",
+    f"- Same text, only line endings differ (CRLF vs LF): {len(diff_eol)}",
     f"- Different, expected (code/resources/signature): {len(diff_expected)}",
     f"- Different, NOT in the expected list: **{len(diff_unexpected)}**",
     f"- Only in this build: {len(only_ours)} (unexpected: {len(only_ours_unexpected)})",
@@ -69,11 +75,12 @@ def section(title, names, src):
         lines.append(f"- `{n}` {src[n][1]} bytes sha256 {src[n][0][:16]}…")
     lines.append("")
 section("Different, not in the expected list (compiled-from-source native libs are normal here)", diff_unexpected, a)
+section("Same content, only CRLF/LF line endings differ", diff_eol, a)
 section("Only in this build", only_ours, a)
 section("Only in official", only_off, b)
 section("Different, expected", diff_expected, a)
 
 open(report, "w").write("\n".join(lines))
-print("\n".join(lines[:12]))
+print("\n".join(lines[:13]))
 for n in diff_unexpected + only_ours_unexpected:
     print("CHECK:", n)

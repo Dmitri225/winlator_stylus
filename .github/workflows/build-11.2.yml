@@ -72,6 +72,24 @@ jobs:
           gh release download "$OFFICIAL_TAG" -R "$OFFICIAL_REPO" -p '*.apk' -D official
           ls -la official
           python3 ci-src/ci/compare_apks.py out/*.apk official/*.apk out/APK_COMPARISON.md
+          # native libs compiled from source differ in bytes (build paths, build-id);
+          # show that they export the same functions as the official ones
+          NM="$ANDROID_HOME/ndk/24.0.8215888/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          mkdir -p x/ours x/off
+          unzip -q -o out/*.apk 'lib/*' -d x/ours
+          unzip -q -o official/*.apk 'lib/*' -d x/off
+          {
+            echo; echo "## Native libraries: exported symbols vs official"
+            for f in x/ours/lib/arm64-v8a/*.so; do
+              n=$(basename "$f"); o="x/off/lib/arm64-v8a/$n"
+              cmp -s "$f" "$o" && continue
+              "$NM" -D --defined-only "$f" | awk '{print $NF}' | sort -u > /tmp/a.sym
+              "$NM" -D --defined-only "$o" | awk '{print $NF}' | sort -u > /tmp/b.sym
+              if cmp -s /tmp/a.sym /tmp/b.sym; then r="same $(wc -l < /tmp/a.sym) exported symbols"
+              else r="symbols differ: +$(comm -23 /tmp/a.sym /tmp/b.sym | wc -l) / -$(comm -13 /tmp/a.sym /tmp/b.sym | wc -l) ($(comm -23 /tmp/a.sym /tmp/b.sym | head -5 | tr '\n' ' '))"; fi
+              echo "- \`$n\` ours $(stat -c%s "$f") B, official $(stat -c%s "$o") B: $r"
+            done
+          } | tee -a out/APK_COMPARISON.md
 
       - uses: actions/upload-artifact@v4
         with:
@@ -90,7 +108,9 @@ jobs:
             echo
             echo '```'; cat out/SHA256SUMS.txt; echo '```'
             echo
-            head -12 out/APK_COMPARISON.md
+            head -13 out/APK_COMPARISON.md
+            echo
+            sed -n '/## Native libraries/,$p' out/APK_COMPARISON.md
           } > notes.md
           gh release create "$tag" out/*.apk out/APK_COMPARISON.md out/SHA256SUMS.txt -R "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" --title "Winlator 11.2 + S Pen (build ${GITHUB_RUN_NUMBER})" --notes-file notes.md
