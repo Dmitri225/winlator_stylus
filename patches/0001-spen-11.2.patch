@@ -1,0 +1,661 @@
+From 38afd0f01e829bfa972dff0290a53aab5cceefef Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Tue, 3 Nov 2026 11:35:26 +0000
+Subject: [PATCH] S Pen stylus support + background keep-alive tweaks for
+ Winlator 11.2
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ app/build.gradle                              |  12 +-
+ app/src/main/AndroidManifest.xml              |   3 +-
+ .../java/com/winlator/SettingsFragment.java   |  28 +-
+ .../com/winlator/XServerDisplayActivity.java  |  26 ++
+ .../winlator/services/ForegroundService.java  |   2 +-
+ .../winlator/widget/InputControlsView.java    |   7 +
+ .../com/winlator/widget/TouchpadView.java     | 258 ++++++++++++++++++
+ app/src/main/res/layout/settings_fragment.xml |  66 +++++
+ app/src/main/res/values-pt/strings.xml        |   8 +
+ app/src/main/res/values-ru/strings.xml        |   8 +
+ app/src/main/res/values/arrays.xml            |   5 +
+ app/src/main/res/values/strings.xml           |   8 +
+ 12 files changed, 427 insertions(+), 4 deletions(-)
+
+diff --git a/app/build.gradle b/app/build.gradle
+index 7690275..bcde1f8 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -9,11 +9,21 @@ android {
+         minSdkVersion 26
+         targetSdkVersion 28
+         versionCode 33
+-        versionName "11.2"
++        versionName "11.2-spen"
++    }
++
++    signingConfigs {
++        spen {
++            storeFile rootProject.file('ci/winlator-spen.keystore')
++            storePassword 'winlator-spen'
++            keyAlias 'winlator-spen'
++            keyPassword 'winlator-spen'
++        }
+     }
+ 
+     buildTypes {
+         debug {
++            signingConfig signingConfigs.spen
+             minifyEnabled true
+             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+ 
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 1262c0d..aa29300 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -15,6 +15,7 @@
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+     <uses-permission android:name="android.permission.WAKE_LOCK" />
++    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+ 
+     <application
+         android:icon="@mipmap/ic_launcher"
+@@ -40,7 +41,7 @@
+             android:theme="@style/AppThemeFullscreenDark"
+             android:supportsPictureInPicture="true"
+             android:launchMode="singleTask"
+-            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|density|navigation"
++            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|density|navigation|uiMode|locale|layoutDirection|fontScale|fontWeightAdjustment|colorMode|touchscreen|mcc|mnc"
+             android:screenOrientation="sensorLandscape" />
+ 
+         <activity android:name="com.winlator.ControlsEditorActivity"
+diff --git a/app/src/main/java/com/winlator/SettingsFragment.java b/app/src/main/java/com/winlator/SettingsFragment.java
+index 3bb2d01..b20575c 100644
+--- a/app/src/main/java/com/winlator/SettingsFragment.java
++++ b/app/src/main/java/com/winlator/SettingsFragment.java
+@@ -136,6 +136,27 @@ public class SettingsFragment extends Fragment {
+         final CheckBox cbMoveCursorToTouchpoint = view.findViewById(R.id.CBMoveCursorToTouchpoint);
+         cbMoveCursorToTouchpoint.setChecked(preferences.getBoolean("move_cursor_to_touchpoint", false));
+ 
++        final CheckBox cbStylusAbsoluteMode = view.findViewById(R.id.CBStylusAbsoluteMode);
++        cbStylusAbsoluteMode.setChecked(preferences.getBoolean("stylus_absolute_mode", true));
++        final Spinner sStylusRMBMode = view.findViewById(R.id.SStylusRMBMode);
++        final View llStylusLongPress = view.findViewById(R.id.LLStylusLongPress);
++        final SeekBar sbStylusLongPress = view.findViewById(R.id.SBStylusLongPress);
++        sbStylusLongPress.setValue(preferences.getInt("stylus_long_press_ms", com.winlator.widget.TouchpadView.DEFAULT_STYLUS_LONG_PRESS_MILLISECONDS));
++        sStylusRMBMode.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
++            @Override
++            public void onItemSelected(android.widget.AdapterView<?> parent, View v, int position, long id) {
++                llStylusLongPress.setVisibility(position == com.winlator.widget.TouchpadView.STYLUS_RMB_MODE_LONG_PRESS ? View.VISIBLE : View.GONE);
++            }
++
++            @Override
++            public void onNothingSelected(android.widget.AdapterView<?> parent) {}
++        });
++        sStylusRMBMode.setSelection(preferences.getInt("stylus_rmb_mode", com.winlator.widget.TouchpadView.STYLUS_RMB_MODE_LONG_PRESS));
++        final CheckBox cbStylusHoverButtonRMB = view.findViewById(R.id.CBStylusHoverButtonRMB);
++        cbStylusHoverButtonRMB.setChecked(preferences.getBoolean("stylus_hover_button_rmb", false));
++        final CheckBox cbStylusPalmRejection = view.findViewById(R.id.CBStylusPalmRejection);
++        cbStylusPalmRejection.setChecked(preferences.getBoolean("stylus_palm_rejection", true));
++
+         final CheckBox cbCapturePointerOnExternalMouse = view.findViewById(R.id.CBCapturePointerOnExternalMouse);
+         cbCapturePointerOnExternalMouse.setChecked(preferences.getBoolean("capture_pointer_on_external_mouse", true));
+ 
+@@ -149,7 +170,7 @@ public class SettingsFragment extends Fragment {
+         cbEnableBackgroundWakelock.setChecked(preferences.getBoolean("enable_background_wakelock", false));
+ 
+         final CheckBox cbEnableBackgroundProtection = view.findViewById(R.id.CBEnableBackgroundProtection);
+-        cbEnableBackgroundProtection.setChecked(preferences.getBoolean("enable_background_protection", false));
++        cbEnableBackgroundProtection.setChecked(preferences.getBoolean("enable_background_protection", true));
+         cbEnableBackgroundProtection.setOnCheckedChangeListener((buttonView, isChecked) -> {
+             cbEnableBackgroundWakelock.setVisibility(isChecked ? View.VISIBLE : View.GONE);
+             if (!isChecked) cbEnableBackgroundWakelock.setChecked(false);
+@@ -229,6 +250,11 @@ public class SettingsFragment extends Fragment {
+             editor.putString("box64_preset", Box64PresetManager.getSpinnerSelectedId(sBox64Preset));
+             editor.putBoolean("move_cursor_to_touchpoint", cbMoveCursorToTouchpoint.isChecked());
+             editor.putBoolean("capture_pointer_on_external_mouse", cbCapturePointerOnExternalMouse.isChecked());
++            editor.putBoolean("stylus_absolute_mode", cbStylusAbsoluteMode.isChecked());
++            editor.putInt("stylus_rmb_mode", sStylusRMBMode.getSelectedItemPosition());
++            editor.putInt("stylus_long_press_ms", (int)sbStylusLongPress.getValue());
++            editor.putBoolean("stylus_hover_button_rmb", cbStylusHoverButtonRMB.isChecked());
++            editor.putBoolean("stylus_palm_rejection", cbStylusPalmRejection.isChecked());
+             editor.putFloat("cursor_speed", sbCursorSpeed.getValue() / 100.0f);
+             editor.putFloat("cursor_scale", sbCursorSize.getValue() / 100.0f);
+             editor.putInt("cursor_color", cpvCursorColor.getColor());
+diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+index 53fb456..5a3df03 100644
+--- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
++++ b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+@@ -148,6 +148,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+ 
+         final PreloaderDialog preloaderDialog = new PreloaderDialog(this);
+         preferences = PreferenceManager.getDefaultSharedPreferences(this);
++        requestIgnoreBatteryOptimizationsOnce();
+         boolean useAndroidClipboardOnWine = preferences.getBoolean("use_android_clipboard_on_wine", false);
+         clipboardManager = useAndroidClipboardOnWine ? (ClipboardManager)getSystemService(CLIPBOARD_SERVICE) : null;
+ 
+@@ -309,6 +310,26 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         }
+     }
+ 
++    /**
++     * With Background Protection on, ask Android/One UI once to exempt Winlator from battery
++     * optimization ("Unrestricted"), so the foreground service is not throttled or frozen.
++     */
++    private void requestIgnoreBatteryOptimizationsOnce() {
++        try {
++            if (!preferences.getBoolean("enable_background_protection", true)) return;
++            if (preferences.getBoolean("battery_optimization_asked", false)) return;
++            android.os.PowerManager pm = (android.os.PowerManager)getSystemService(POWER_SERVICE);
++            if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) return;
++            preferences.edit().putBoolean("battery_optimization_asked", true).apply();
++            Intent intent = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
++            intent.setData(android.net.Uri.parse("package:" + getPackageName()));
++            startActivity(intent);
++        }
++        catch (Exception e) {
++            android.util.Log.w("XServerDisplayActivity", "Unable to request battery optimization exemption", e);
++        }
++    }
++
+     @Override
+     public void onResume() {
+         super.onResume();
+@@ -592,6 +613,11 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         touchpadView = new TouchpadView(this, xServer, capturePointerOnExternalMouse);
+         touchpadView.setSensitivity(globalCursorSpeed);
+         touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", false));
++        touchpadView.setStylusEnabled(preferences.getBoolean("stylus_absolute_mode", true));
++        touchpadView.setStylusRightButtonMode((byte)preferences.getInt("stylus_rmb_mode", TouchpadView.STYLUS_RMB_MODE_LONG_PRESS));
++        touchpadView.setStylusLongPressMillis(preferences.getInt("stylus_long_press_ms", TouchpadView.DEFAULT_STYLUS_LONG_PRESS_MILLISECONDS));
++        touchpadView.setStylusHoverButtonRightClick(preferences.getBoolean("stylus_hover_button_rmb", false));
++        touchpadView.setStylusPalmRejection(preferences.getBoolean("stylus_palm_rejection", true));
+         touchpadView.setFourFingersTapCallback(() -> {
+             if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
+         });
+diff --git a/app/src/main/java/com/winlator/services/ForegroundService.java b/app/src/main/java/com/winlator/services/ForegroundService.java
+index 0940581..0a498d1 100644
+--- a/app/src/main/java/com/winlator/services/ForegroundService.java
++++ b/app/src/main/java/com/winlator/services/ForegroundService.java
+@@ -64,7 +64,7 @@ public class ForegroundService extends Service {
+         if (ctx == null) return;
+         prefs = PreferenceManager.getDefaultSharedPreferences(ctx.getApplicationContext());
+         if (prefs != null) {
+-            if (!prefs.getBoolean("enable_background_protection", false)) {
++            if (!prefs.getBoolean("enable_background_protection", true)) {
+                 Log.i(TAG, "startSession called with background protection disabled; ignoring");
+                 return;
+             }
+diff --git a/app/src/main/java/com/winlator/widget/InputControlsView.java b/app/src/main/java/com/winlator/widget/InputControlsView.java
+index c9e7090..72eba33 100755
+--- a/app/src/main/java/com/winlator/widget/InputControlsView.java
++++ b/app/src/main/java/com/winlator/widget/InputControlsView.java
+@@ -304,6 +304,13 @@ public class InputControlsView extends View {
+         }
+     }
+ 
++    @Override
++    public android.view.PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
++        // overlay sits above TouchpadView: let it decide (hides the S Pen hover dot)
++        if (touchpadView != null) return touchpadView.onResolvePointerIcon(event, pointerIndex);
++        return super.onResolvePointerIcon(event, pointerIndex);
++    }
++
+     @Override
+     public boolean onGenericMotionEvent(MotionEvent event) {
+         if (!editMode && profile != null) {
+diff --git a/app/src/main/java/com/winlator/widget/TouchpadView.java b/app/src/main/java/com/winlator/widget/TouchpadView.java
+index 5d04f4d..0c6e15e 100644
+--- a/app/src/main/java/com/winlator/widget/TouchpadView.java
++++ b/app/src/main/java/com/winlator/widget/TouchpadView.java
+@@ -4,9 +4,12 @@ import android.content.Context;
+ import android.graphics.Color;
+ import android.graphics.drawable.ColorDrawable;
+ import android.graphics.drawable.StateListDrawable;
++import android.view.HapticFeedbackConstants;
+ import android.view.InputDevice;
+ import android.view.MotionEvent;
++import android.view.PointerIcon;
+ import android.view.View;
++import android.view.ViewConfiguration;
+ import android.view.ViewGroup;
+ import android.widget.FrameLayout;
+ 
+@@ -41,6 +44,33 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+     private Runnable fourFingersTapCallback;
+     private final float[] xform = XForm.getInstance();
+ 
++    // ---- Stylus (S Pen) support ----
++    public static final byte STYLUS_RMB_MODE_SIDE_BUTTON = 0;
++    public static final byte STYLUS_RMB_MODE_LONG_PRESS = 1;
++    public static final short DEFAULT_STYLUS_LONG_PRESS_MILLISECONDS = 400;
++    public static final short STYLUS_PALM_REJECTION_MILLISECONDS = 300;
++    private boolean stylusEnabled = true;
++    private byte stylusRightButtonMode = STYLUS_RMB_MODE_LONG_PRESS;
++    private int stylusLongPressMillis = DEFAULT_STYLUS_LONG_PRESS_MILLISECONDS;
++    private boolean stylusHoverButtonRightClick = false;
++    private boolean stylusPalmRejection = true;
++    private Pointer.Button stylusTipButton = null;
++    private boolean stylusHoverButtonDown = false;
++    private boolean stylusTipDown = false;
++    private boolean stylusPendingLeft = false;
++    private float stylusDownX, stylusDownY;
++    private int stylusLastX = Integer.MIN_VALUE, stylusLastY = Integer.MIN_VALUE;
++    private long stylusLastEventTime = 0;
++    private final int touchSlop;
++    private final Runnable stylusLongPressRunnable = () -> {
++        if (stylusTipDown && stylusPendingLeft) {
++            stylusPendingLeft = false;
++            stylusPressTipButton(Pointer.Button.BUTTON_RIGHT);
++            // tactile confirmation that the long press turned into a right button
++            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
++        }
++    };
++
+     public TouchpadView(Context context, XServer xServer, boolean capturePointerOnExternalMouse) {
+         super(context);
+         this.xServer = xServer;
+@@ -49,6 +79,7 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+         setClickable(true);
+         setFocusable(true);
+         setFocusableInTouchMode(false);
++        touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
+         updateXform(AppUtils.getScreenWidth(), AppUtils.getScreenHeight(), xServer.screenInfo.width, xServer.screenInfo.height);
+ 
+         if (capturePointerOnExternalMouse) {
+@@ -139,6 +170,22 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+         int actionIndex = event.getActionIndex();
+         int pointerId = event.getPointerId(actionIndex);
+         int actionMasked = event.getActionMasked();
++
++        if (stylusEnabled && isEnabled()) {
++            if (actionMasked == MotionEvent.ACTION_CANCEL) {
++                if (stylusTipDown) handleStylusTouchEvent(event); // then fall through to reset fingers
++            }
++            else if (actionMasked == MotionEvent.ACTION_MOVE) {
++                if (stylusTipDown && findStylusPointerIndex(event) >= 0) return handleStylusTouchEvent(event);
++            }
++            else if (isStylusPointer(event, actionIndex)) {
++                return handleStylusTouchEvent(event);
++            }
++            else if (isFingerDownAction(actionMasked) && (stylusTipDown || (stylusPalmRejection && isStylusRecentlyActive()))) {
++                return true; // palm/finger touching the screen while the pen is in use
++            }
++        }
++
+         if (pointerId >= MAX_FINGERS) return true;
+ 
+         switch (actionMasked) {
+@@ -354,6 +401,7 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+     }
+ 
+     public boolean onExternalMouseEvent(MotionEvent event) {
++        if (stylusEnabled && isEnabled() && isStylusPointer(event, 0)) return handleStylusGenericEvent(event);
+         boolean handled = false;
+         if (isEnabled() && event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+             int actionButton = event.getActionButton();
+@@ -414,6 +462,216 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+         return result;
+     }
+ 
++    // =====================================================================
++    // Stylus (S Pen) as an absolute pointing device
++    //   hover            -> pointer follows the pen tip (no buttons)
++    //   tip              -> LMB press/drag/release at the pen position
++    //   side button + tip-> RMB held while the tip touches (HoMM3 info popups)
++    //   long press (opt) -> RMB held, like the ExaGear touch mode
++    //   hover + side btn (opt) -> RMB without touching the screen
++    // =====================================================================
++
++    private static boolean isStylusPointer(MotionEvent event, int pointerIndex) {
++        if (pointerIndex < 0 || pointerIndex >= event.getPointerCount()) return false;
++        int toolType = event.getToolType(pointerIndex);
++        return toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER;
++    }
++
++    private static int findStylusPointerIndex(MotionEvent event) {
++        for (int i = 0, count = event.getPointerCount(); i < count; i++) {
++            if (isStylusPointer(event, i)) return i;
++        }
++        return -1;
++    }
++
++    private static boolean isFingerDownAction(int actionMasked) {
++        return actionMasked == MotionEvent.ACTION_DOWN || actionMasked == MotionEvent.ACTION_POINTER_DOWN;
++    }
++
++    private static boolean isStylusSideButtonPressed(MotionEvent event) {
++        // BUTTON_SECONDARY: some firmwares/older Android versions report the pen button this way
++        return (event.getButtonState() & (MotionEvent.BUTTON_STYLUS_PRIMARY | MotionEvent.BUTTON_SECONDARY)) != 0;
++    }
++
++    private boolean isStylusRecentlyActive() {
++        return stylusTipDown || (System.currentTimeMillis() - stylusLastEventTime) < STYLUS_PALM_REJECTION_MILLISECONDS;
++    }
++
++    private void stylusMoveTo(float viewX, float viewY) {
++        float[] p = XForm.transformPoint(xform, viewX, viewY);
++        int x = (int)p[0];
++        int y = (int)p[1];
++        if (xServer.isRelativeMouseMovement()) {
++            if (stylusLastX != Integer.MIN_VALUE) {
++                int dx = x - stylusLastX;
++                int dy = y - stylusLastY;
++                if (dx != 0 || dy != 0) xServer.getWinHandler().mouseEvent(MouseEventFlags.MOVE, dx, dy, 0);
++            }
++        }
++        else if (x != stylusLastX || y != stylusLastY) {
++            xServer.injectPointerMove(x, y);
++        }
++        stylusLastX = x;
++        stylusLastY = y;
++    }
++
++    private void stylusPressTipButton(Pointer.Button button) {
++        stylusReleaseTipButton();
++        if (!xServer.pointer.isButtonPressed(button)) xServer.injectPointerButtonPress(button);
++        stylusTipButton = button;
++    }
++
++    private void stylusReleaseTipButton() {
++        if (stylusTipButton != null) {
++            if (xServer.pointer.isButtonPressed(stylusTipButton)) xServer.injectPointerButtonRelease(stylusTipButton);
++            stylusTipButton = null;
++        }
++    }
++
++    private void stylusClick(final Pointer.Button button) {
++        xServer.injectPointerButtonPress(button);
++        // same 30ms gap the touchpad uses, so games that poll button state don't miss the click
++        postDelayed(() -> xServer.injectPointerButtonRelease(button), 30);
++    }
++
++    private void stylusReleaseHoverButton() {
++        if (stylusHoverButtonDown) {
++            stylusHoverButtonDown = false;
++            if (xServer.pointer.isButtonPressed(Pointer.Button.BUTTON_RIGHT)) xServer.injectPointerButtonRelease(Pointer.Button.BUTTON_RIGHT);
++        }
++    }
++
++    private boolean handleStylusTouchEvent(MotionEvent event) {
++        stylusLastEventTime = System.currentTimeMillis();
++        int actionMasked = event.getActionMasked();
++        int index = (actionMasked == MotionEvent.ACTION_MOVE || actionMasked == MotionEvent.ACTION_CANCEL) ?
++            findStylusPointerIndex(event) : event.getActionIndex();
++        if (index < 0) return true;
++
++        float viewX = event.getX(index);
++        float viewY = event.getY(index);
++
++        switch (actionMasked) {
++            case MotionEvent.ACTION_DOWN:
++            case MotionEvent.ACTION_POINTER_DOWN:
++                removeCallbacks(stylusLongPressRunnable);
++                stylusReleaseHoverButton();
++                stylusTipDown = true;
++                stylusPendingLeft = false;
++                stylusDownX = viewX;
++                stylusDownY = viewY;
++                stylusMoveTo(viewX, viewY);
++
++                if (isStylusSideButtonPressed(event)) {
++                    stylusPressTipButton(Pointer.Button.BUTTON_RIGHT);
++                }
++                else if (event.getToolType(index) == MotionEvent.TOOL_TYPE_ERASER) {
++                    stylusPressTipButton(Pointer.Button.BUTTON_MIDDLE);
++                }
++                else if (stylusRightButtonMode == STYLUS_RMB_MODE_LONG_PRESS) {
++                    // defer LMB: short tap = LMB click, movement = LMB drag,
++                    // holding still for N ms = RMB held until the pen is lifted
++                    stylusPendingLeft = true;
++                    postDelayed(stylusLongPressRunnable, stylusLongPressMillis);
++                }
++                else {
++                    stylusPressTipButton(Pointer.Button.BUTTON_LEFT);
++                }
++                break;
++            case MotionEvent.ACTION_MOVE:
++                if (!stylusTipDown) break;
++                if (!stylusPendingLeft) stylusMoveTo(viewX, viewY);
++                if (stylusPendingLeft && Math.hypot(viewX - stylusDownX, viewY - stylusDownY) > touchSlop) {
++                    removeCallbacks(stylusLongPressRunnable);
++                    stylusPendingLeft = false;
++                    // start the drag where the pen landed, then catch up to the current position
++                    stylusMoveTo(stylusDownX, stylusDownY);
++                    stylusPressTipButton(Pointer.Button.BUTTON_LEFT);
++                    stylusMoveTo(viewX, viewY);
++                }
++                else if (stylusPendingLeft) {
++                    stylusMoveTo(viewX, viewY); // tiny jitter within the slop: still follow the pen
++                }
++                else if (stylusTipButton == Pointer.Button.BUTTON_LEFT && isStylusSideButtonPressed(event)) {
++                    // side button pressed after the tip already landed: switch to RMB
++                    stylusPressTipButton(Pointer.Button.BUTTON_RIGHT);
++                }
++                break;
++            case MotionEvent.ACTION_UP:
++            case MotionEvent.ACTION_POINTER_UP:
++            case MotionEvent.ACTION_CANCEL:
++                removeCallbacks(stylusLongPressRunnable);
++                if (actionMasked != MotionEvent.ACTION_CANCEL) stylusMoveTo(viewX, viewY);
++                if (stylusPendingLeft && actionMasked != MotionEvent.ACTION_CANCEL) stylusClick(Pointer.Button.BUTTON_LEFT);
++                stylusPendingLeft = false;
++                stylusReleaseTipButton();
++                stylusTipDown = false;
++                break;
++        }
++        return true;
++    }
++
++    private boolean handleStylusGenericEvent(MotionEvent event) {
++        stylusLastEventTime = System.currentTimeMillis();
++        switch (event.getActionMasked()) {
++            case MotionEvent.ACTION_HOVER_ENTER:
++            case MotionEvent.ACTION_HOVER_MOVE:
++                if (!stylusTipDown) {
++                    stylusMoveTo(event.getX(), event.getY());
++                    if (stylusHoverButtonRightClick) {
++                        boolean pressed = isStylusSideButtonPressed(event);
++                        if (pressed && !stylusHoverButtonDown) {
++                            stylusHoverButtonDown = true;
++                            if (!xServer.pointer.isButtonPressed(Pointer.Button.BUTTON_RIGHT)) xServer.injectPointerButtonPress(Pointer.Button.BUTTON_RIGHT);
++                        }
++                        else if (!pressed) stylusReleaseHoverButton();
++                    }
++                }
++                return true;
++            case MotionEvent.ACTION_HOVER_EXIT:
++                stylusReleaseHoverButton();
++                if (!stylusTipDown) {
++                    stylusLastX = Integer.MIN_VALUE;
++                    stylusLastY = Integer.MIN_VALUE;
++                }
++                return true;
++            case MotionEvent.ACTION_BUTTON_PRESS:
++            case MotionEvent.ACTION_BUTTON_RELEASE:
++                // tip + button is handled in onTouchEvent (button state), hover + button above
++                return true;
++        }
++        return false;
++    }
++
++    @Override
++    public PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
++        // hide Samsung's hover dot: the X server already draws the Windows cursor
++        if (stylusEnabled && isStylusPointer(event, pointerIndex)) {
++            return PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_NULL);
++        }
++        return super.onResolvePointerIcon(event, pointerIndex);
++    }
++
++    public void setStylusEnabled(boolean stylusEnabled) {
++        this.stylusEnabled = stylusEnabled;
++    }
++
++    public void setStylusRightButtonMode(byte stylusRightButtonMode) {
++        this.stylusRightButtonMode = stylusRightButtonMode;
++    }
++
++    public void setStylusLongPressMillis(int stylusLongPressMillis) {
++        this.stylusLongPressMillis = Math.max(100, stylusLongPressMillis);
++    }
++
++    public void setStylusHoverButtonRightClick(boolean stylusHoverButtonRightClick) {
++        this.stylusHoverButtonRightClick = stylusHoverButtonRightClick;
++    }
++
++    public void setStylusPalmRejection(boolean stylusPalmRejection) {
++        this.stylusPalmRejection = stylusPalmRejection;
++    }
++
+     @Override
+     public boolean onCapturedPointer(View view, MotionEvent event) {
+         if (event.getAction() == MotionEvent.ACTION_MOVE) {
+diff --git a/app/src/main/res/layout/settings_fragment.xml b/app/src/main/res/layout/settings_fragment.xml
+index 1ed0152..51f7478 100644
+--- a/app/src/main/res/layout/settings_fragment.xml
++++ b/app/src/main/res/layout/settings_fragment.xml
+@@ -98,6 +98,72 @@
+                     android:text="@string/mouse" />
+             </FrameLayout>
+ 
++            <FrameLayout
++                android:layout_width="match_parent"
++                android:layout_height="wrap_content">
++
++                <LinearLayout style="@style/FieldSet">
++                    <CheckBox
++                        android:id="@+id/CBStylusAbsoluteMode"
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:text="@string/stylus_absolute_mode" />
++
++                    <TextView
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:layout_marginTop="8dp"
++                        android:text="@string/stylus_rmb_mode" />
++
++                    <Spinner
++                        style="@style/ComboBox"
++                        android:id="@+id/SStylusRMBMode"
++                        android:layout_width="match_parent"
++                        android:entries="@array/stylus_rmb_mode_entries" />
++
++                    <LinearLayout
++                        android:id="@+id/LLStylusLongPress"
++                        android:layout_width="match_parent"
++                        android:layout_height="wrap_content"
++                        android:orientation="vertical"
++                        android:layout_marginTop="8dp">
++
++                        <TextView
++                            android:layout_width="wrap_content"
++                            android:layout_height="wrap_content"
++                            android:text="@string/stylus_long_press_time" />
++
++                        <com.winlator.widget.SeekBar
++                            android:id="@+id/SBStylusLongPress"
++                            android:layout_width="match_parent"
++                            android:layout_height="wrap_content"
++                            app:suffix=" ms"
++                            app:step="50"
++                            app:minValue="150"
++                            app:maxValue="1500" />
++                    </LinearLayout>
++
++                    <View style="@style/FieldSeparator" />
++
++                    <CheckBox
++                        android:id="@+id/CBStylusHoverButtonRMB"
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:text="@string/stylus_hover_button_rmb" />
++
++                    <CheckBox
++                        android:id="@+id/CBStylusPalmRejection"
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:text="@string/stylus_palm_rejection"
++                        android:layout_marginTop="8dp" />
++                </LinearLayout>
++
++                <TextView
++                    style="@style/FieldSetLabel"
++                    android:text="@string/stylus" />
++            </FrameLayout>
++
+             <FrameLayout
+                 android:layout_width="match_parent"
+                 android:layout_height="wrap_content">
+diff --git a/app/src/main/res/values-pt/strings.xml b/app/src/main/res/values-pt/strings.xml
+index e2d342c..03fb8fe 100644
+--- a/app/src/main/res/values-pt/strings.xml
++++ b/app/src/main/res/values-pt/strings.xml
+@@ -299,4 +299,12 @@
+     <string name="enable_background_wakelock">Ativar wakelock quando o dispositivo está bloqueado</string>
+     <string name="save_mem_on_run_from_steam">Economize memória ao executar a partir do Steam</string>
+     <string name="present_mode">Modo de Apresentação</string>
++    <string name="stylus">Caneta (S Pen)</string>
++    <string name="stylus_absolute_mode">Caneta como mouse absoluto</string>
++    <string name="stylus_rmb_mode">Botão direito do mouse</string>
++    <string name="stylus_long_press_time">Tempo de toque longo</string>
++    <string name="stylus_hover_button_rmb">Botão lateral ao pairar = botão direito</string>
++    <string name="stylus_palm_rejection">Ignorar toques dos dedos ao usar a caneta</string>
++    <string name="stylus_rmb_side_button">Botão lateral + toque</string>
++    <string name="stylus_rmb_long_press">Toque longo (segurar a caneta)</string>
+ </resources>
+\ No newline at end of file
+diff --git a/app/src/main/res/values-ru/strings.xml b/app/src/main/res/values-ru/strings.xml
+index 3475814..b59f06c 100644
+--- a/app/src/main/res/values-ru/strings.xml
++++ b/app/src/main/res/values-ru/strings.xml
+@@ -299,4 +299,12 @@
+     <string name="enable_background_wakelock">Включить wakelock, когда устройство заблокировано</string>
+     <string name="save_mem_on_run_from_steam">Экономия памяти при запуске из Steam</string>
+     <string name="present_mode">Режим презентации</string>
++    <string name="stylus">Стилус (S Pen)</string>
++    <string name="stylus_absolute_mode">Стилус как абсолютная мышь</string>
++    <string name="stylus_rmb_mode">Правая кнопка мыши</string>
++    <string name="stylus_long_press_time">Время долгого касания</string>
++    <string name="stylus_hover_button_rmb">Боковая кнопка при наведении = правая кнопка</string>
++    <string name="stylus_palm_rejection">Игнорировать касания пальцами при работе стилусом</string>
++    <string name="stylus_rmb_side_button">Боковая кнопка + касание</string>
++    <string name="stylus_rmb_long_press">Долгое касание (удержание пера)</string>
+ </resources>
+\ No newline at end of file
+diff --git a/app/src/main/res/values/arrays.xml b/app/src/main/res/values/arrays.xml
+index f0fdabd..0791e96 100644
+--- a/app/src/main/res/values/arrays.xml
++++ b/app/src/main/res/values/arrays.xml
+@@ -157,4 +157,9 @@
+         <item>mailbox</item>
+         <item>fifo</item>
+     </string-array>
++    <!-- order must match TouchpadView.STYLUS_RMB_MODE_* -->
++    <string-array name="stylus_rmb_mode_entries">
++        <item>@string/stylus_rmb_side_button</item>
++        <item>@string/stylus_rmb_long_press</item>
++    </string-array>
+ </resources>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 61fcd5e..4e53758 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -357,4 +357,12 @@
+     <string name="fgs_notification_content_else">Winlator is running in the background</string>
+     <string name="save_mem_on_run_from_steam">Save memory on run from Steam</string>
+     <string name="present_mode">Present Mode</string>
++    <string name="stylus">Stylus (S Pen)</string>
++    <string name="stylus_absolute_mode">Stylus as absolute mouse</string>
++    <string name="stylus_rmb_mode">Right mouse button</string>
++    <string name="stylus_long_press_time">Long press time</string>
++    <string name="stylus_hover_button_rmb">Side button while hovering = right button</string>
++    <string name="stylus_palm_rejection">Ignore finger touches while using stylus</string>
++    <string name="stylus_rmb_side_button">Side button + touch</string>
++    <string name="stylus_rmb_long_press">Long press (hold the pen)</string>
+ </resources>
+\ No newline at end of file
+-- 
+2.43.0
+

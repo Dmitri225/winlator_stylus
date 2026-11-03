@@ -1,0 +1,96 @@
+name: Build Winlator 11.2 + S Pen APK
+
+on:
+  push:
+    branches: [ spen-11.2 ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      APP_REPO: brunodev85/winlator-app
+      # commit referenced by brunodev85/winlator main as the 11.2 "app" submodule
+      APP_COMMIT: a030f552f452158a2db64fdb32b490fa19c0b48d
+      OFFICIAL_REPO: brunodev85/winlator
+      OFFICIAL_TAG: v11.2.0
+    steps:
+      - name: Checkout patches
+        uses: actions/checkout@v4
+        with:
+          path: ci-src
+
+      - name: Checkout Winlator 11.2 source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ env.APP_COMMIT }}
+          path: src
+
+      - name: Apply patches
+        working-directory: src
+        run: |
+          git config user.name ci && git config user.email ci@localhost
+          for p in ../ci-src/patches/*.patch; do echo "== $p"; git am --3way "$p"; done
+          mkdir -p ci && cp ../ci-src/ci/winlator-spen.keystore ci/
+          git log --oneline -3
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install SDK components
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;24.0.8215888" "cmake;3.22.1" > /dev/null
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK
+        working-directory: src
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp src/app/build/outputs/apk/debug/*.apk "out/Winlator_11.2_SPen_${GITHUB_RUN_NUMBER}.apk"
+          ls -la out
+          sha256sum out/*.apk | tee out/SHA256SUMS.txt
+
+      - name: Compare with official Winlator 11.2 APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p official
+          gh release download "$OFFICIAL_TAG" -R "$OFFICIAL_REPO" -p '*.apk' -D official
+          ls -la official
+          python3 ci-src/ci/compare_apks.py out/*.apk official/*.apk out/APK_COMPARISON.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winlator-11.2-spen
+          path: out/*
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="spen-11.2-build-${GITHUB_RUN_NUMBER}"
+          {
+            echo "Winlator 11.2 (brunodev85/winlator-app @ ${APP_COMMIT:0:7}) + S Pen patch, built from ${GITHUB_SHA:0:7}."
+            echo
+            echo "Package com.winlator: uninstall official Winlator / older S Pen builds first (back up the game folder)."
+            echo
+            echo '```'; cat out/SHA256SUMS.txt; echo '```'
+            echo
+            head -12 out/APK_COMPARISON.md
+          } > notes.md
+          gh release create "$tag" out/*.apk out/APK_COMPARISON.md out/SHA256SUMS.txt -R "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "Winlator 11.2 + S Pen (build ${GITHUB_RUN_NUMBER})" --notes-file notes.md
