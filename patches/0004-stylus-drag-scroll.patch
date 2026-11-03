@@ -1,0 +1,284 @@
+From 94ee0d0b184b952322b8020d70789c93fac2a59a Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Tue, 3 Nov 2026 12:30:17 +0000
+Subject: [PATCH] Stylus: optional drag-to-scroll (arrow keys), e.g. HoMM3
+ adventure map
+
+New setting 'Stylus drag': left button drag (default) | scroll map with
+arrow keys | scroll map inverted. In scroll mode a pen drag beyond the touch
+slop sends one arrow key tap per 32 px (one HoMM3 tile) in grab-and-drag
+direction; the cursor stays where the pen landed so edge scrolling does not
+kick in. Short tap = LMB click, long press = RMB as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ .../java/com/winlator/SettingsFragment.java   |  3 +
+ .../com/winlator/XServerDisplayActivity.java  |  1 +
+ .../com/winlator/widget/TouchpadView.java     | 76 ++++++++++++++++++-
+ app/src/main/res/layout/settings_fragment.xml | 12 +++
+ app/src/main/res/values-pt/strings.xml        |  4 +
+ app/src/main/res/values-ru/strings.xml        |  4 +
+ app/src/main/res/values/arrays.xml            |  6 ++
+ app/src/main/res/values/strings.xml           |  4 +
+ 8 files changed, 106 insertions(+), 4 deletions(-)
+
+diff --git a/app/src/main/java/com/winlator/SettingsFragment.java b/app/src/main/java/com/winlator/SettingsFragment.java
+index dd43a6b..9df50a5 100644
+--- a/app/src/main/java/com/winlator/SettingsFragment.java
++++ b/app/src/main/java/com/winlator/SettingsFragment.java
+@@ -152,6 +152,8 @@ public class SettingsFragment extends Fragment {
+             public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+         });
+         sStylusRMBMode.setSelection(preferences.getInt("stylus_rmb_mode", com.winlator.widget.TouchpadView.STYLUS_RMB_MODE_LONG_PRESS));
++        final Spinner sStylusDragMode = view.findViewById(R.id.SStylusDragMode);
++        sStylusDragMode.setSelection(preferences.getInt("stylus_drag_mode", com.winlator.widget.TouchpadView.STYLUS_DRAG_MODE_LEFT_BUTTON));
+         final CheckBox cbStylusHoverButtonRMB = view.findViewById(R.id.CBStylusHoverButtonRMB);
+         cbStylusHoverButtonRMB.setChecked(preferences.getBoolean("stylus_hover_button_rmb", false));
+         final CheckBox cbStylusPalmRejection = view.findViewById(R.id.CBStylusPalmRejection);
+@@ -259,6 +261,7 @@ public class SettingsFragment extends Fragment {
+             editor.putBoolean("stylus_absolute_mode", cbStylusAbsoluteMode.isChecked());
+             editor.putInt("stylus_rmb_mode", sStylusRMBMode.getSelectedItemPosition());
+             editor.putInt("stylus_long_press_ms", (int)sbStylusLongPress.getValue());
++            editor.putInt("stylus_drag_mode", sStylusDragMode.getSelectedItemPosition());
+             editor.putBoolean("stylus_hover_button_rmb", cbStylusHoverButtonRMB.isChecked());
+             editor.putBoolean("stylus_palm_rejection", cbStylusPalmRejection.isChecked());
+             editor.putFloat("cursor_speed", sbCursorSpeed.getValue() / 100.0f);
+diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+index 09ae7a0..795c551 100644
+--- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
++++ b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+@@ -602,6 +602,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", false));
+         touchpadView.setStylusEnabled(preferences.getBoolean("stylus_absolute_mode", true));
+         touchpadView.setStylusRightButtonMode((byte)preferences.getInt("stylus_rmb_mode", TouchpadView.STYLUS_RMB_MODE_LONG_PRESS));
++        touchpadView.setStylusDragMode((byte)preferences.getInt("stylus_drag_mode", TouchpadView.STYLUS_DRAG_MODE_LEFT_BUTTON));
+         touchpadView.setStylusLongPressMillis(preferences.getInt("stylus_long_press_ms", TouchpadView.DEFAULT_STYLUS_LONG_PRESS_MILLISECONDS));
+         touchpadView.setStylusHoverButtonRightClick(preferences.getBoolean("stylus_hover_button_rmb", false));
+         touchpadView.setStylusPalmRejection(preferences.getBoolean("stylus_palm_rejection", true));
+diff --git a/app/src/main/java/com/winlator/widget/TouchpadView.java b/app/src/main/java/com/winlator/widget/TouchpadView.java
+index dc62a9b..e12901f 100644
+--- a/app/src/main/java/com/winlator/widget/TouchpadView.java
++++ b/app/src/main/java/com/winlator/widget/TouchpadView.java
+@@ -6,6 +6,7 @@ import android.graphics.drawable.ColorDrawable;
+ import android.graphics.drawable.StateListDrawable;
+ import android.os.Handler;
+ import android.os.HandlerThread;
++import android.os.SystemClock;
+ import android.view.HapticFeedbackConstants;
+ import android.view.InputDevice;
+ import android.view.MotionEvent;
+@@ -22,6 +23,7 @@ import com.winlator.renderer.ViewTransformation;
+ import com.winlator.winhandler.MouseEventFlags;
+ import com.winlator.winhandler.WinHandler;
+ import com.winlator.xserver.Pointer;
++import com.winlator.xserver.XKeycode;
+ import com.winlator.xserver.XServer;
+ 
+ public class TouchpadView extends View implements View.OnCapturedPointerListener {
+@@ -50,10 +52,20 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+     public static final byte STYLUS_RMB_MODE_SIDE_BUTTON = 0;
+     public static final byte STYLUS_RMB_MODE_LONG_PRESS = 1;
+     public static final short DEFAULT_STYLUS_LONG_PRESS_MILLISECONDS = 400;
++    public static final byte STYLUS_DRAG_MODE_LEFT_BUTTON = 0;
++    public static final byte STYLUS_DRAG_MODE_SCROLL_KEYS = 1;
++    public static final byte STYLUS_DRAG_MODE_SCROLL_KEYS_INVERTED = 2;
++    private static final int STYLUS_SCROLL_STEP = 32; // X screen pixels per arrow key tap (one HoMM3 map tile)
++    private static final int STYLUS_SCROLL_KEY_INTERVAL = 30; // ms between synthesized key taps
++    private static final int STYLUS_SCROLL_MAX_BACKLOG = 300; // ms of queued taps before extra ones are dropped
+     public static final short STYLUS_PALM_REJECTION_MILLISECONDS = 300;
+     private boolean stylusEnabled = true;
+     private byte stylusRightButtonMode = STYLUS_RMB_MODE_LONG_PRESS;
+     private int stylusLongPressMillis = DEFAULT_STYLUS_LONG_PRESS_MILLISECONDS;
++    private byte stylusDragMode = STYLUS_DRAG_MODE_LEFT_BUTTON;
++    private boolean stylusScrolling = false;
++    private float stylusScrollLastX, stylusScrollLastY, stylusScrollAccumX, stylusScrollAccumY;
++    private long stylusNextKeyTapTime = 0;
+     private boolean stylusHoverButtonRightClick = false;
+     private boolean stylusPalmRejection = true;
+     private Pointer.Button stylusTipButton = null;
+@@ -617,6 +629,40 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+         }
+     }
+ 
++    /**
++     * "Grab and drag" map scrolling: converts pen movement into arrow key taps, one tap per
++     * STYLUS_SCROLL_STEP pixels. Dragging right moves the map content right (view goes left).
++     */
++    private void stylusScrollTo(float viewX, float viewY) {
++        float[] p = XForm.transformPoint(xform, viewX, viewY);
++        stylusScrollAccumX += p[0] - stylusScrollLastX;
++        stylusScrollAccumY += p[1] - stylusScrollLastY;
++        stylusScrollLastX = p[0];
++        stylusScrollLastY = p[1];
++        boolean inverted = stylusDragMode == STYLUS_DRAG_MODE_SCROLL_KEYS_INVERTED;
++
++        while (Math.abs(stylusScrollAccumX) >= STYLUS_SCROLL_STEP) {
++            boolean right = stylusScrollAccumX > 0;
++            stylusScrollAccumX -= right ? STYLUS_SCROLL_STEP : -STYLUS_SCROLL_STEP;
++            stylusTapKey((right ^ inverted) ? XKeycode.KEY_LEFT : XKeycode.KEY_RIGHT);
++        }
++        while (Math.abs(stylusScrollAccumY) >= STYLUS_SCROLL_STEP) {
++            boolean down = stylusScrollAccumY > 0;
++            stylusScrollAccumY -= down ? STYLUS_SCROLL_STEP : -STYLUS_SCROLL_STEP;
++            stylusTapKey((down ^ inverted) ? XKeycode.KEY_UP : XKeycode.KEY_DOWN);
++        }
++    }
++
++    private void stylusTapKey(final XKeycode key) {
++        long now = SystemClock.uptimeMillis();
++        long t = Math.max(now, stylusNextKeyTapTime);
++        if (t - now > STYLUS_SCROLL_MAX_BACKLOG) return; // pen moves faster than the game scrolls
++        stylusNextKeyTapTime = t + STYLUS_SCROLL_KEY_INTERVAL;
++        Handler h = stylusHandler();
++        h.postAtTime(() -> xServer.injectKeyPress(key), t);
++        h.postAtTime(() -> xServer.injectKeyRelease(key), t + STYLUS_SCROLL_KEY_INTERVAL / 2);
++    }
++
+     private boolean handleStylusTouchEvent(MotionEvent event) {
+         stylusLastEventTime = System.currentTimeMillis();
+         int actionMasked = event.getActionMasked();
+@@ -644,11 +690,12 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+                 else if (event.getToolType(index) == MotionEvent.TOOL_TYPE_ERASER) {
+                     stylusPressTipButton(Pointer.Button.BUTTON_MIDDLE);
+                 }
+-                else if (stylusRightButtonMode == STYLUS_RMB_MODE_LONG_PRESS) {
+-                    // defer LMB: short tap = LMB click, movement = LMB drag,
++                else if (stylusRightButtonMode == STYLUS_RMB_MODE_LONG_PRESS || stylusDragMode != STYLUS_DRAG_MODE_LEFT_BUTTON) {
++                    // defer LMB: short tap = LMB click, movement = LMB drag or map scroll,
+                     // holding still for N ms = RMB held until the pen is lifted
+                     stylusPendingLeft = true;
+-                    postDelayed(stylusLongPressRunnable, stylusLongPressMillis);
++                    stylusScrolling = false;
++                    if (stylusRightButtonMode == STYLUS_RMB_MODE_LONG_PRESS) postDelayed(stylusLongPressRunnable, stylusLongPressMillis);
+                 }
+                 else {
+                     stylusPressTipButton(Pointer.Button.BUTTON_LEFT);
+@@ -656,8 +703,24 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+                 break;
+             case MotionEvent.ACTION_MOVE:
+                 if (!stylusTipDown) break;
++                if (stylusScrolling) {
++                    stylusScrollTo(viewX, viewY); // cursor stays put while the map scrolls
++                    break;
++                }
+                 if (!stylusPendingLeft) stylusMoveTo(viewX, viewY);
+-                if (stylusPendingLeft && Math.hypot(viewX - stylusDownX, viewY - stylusDownY) > touchSlop) {
++                if (stylusPendingLeft && stylusDragMode != STYLUS_DRAG_MODE_LEFT_BUTTON &&
++                    Math.hypot(viewX - stylusDownX, viewY - stylusDownY) > touchSlop) {
++                    removeCallbacks(stylusLongPressRunnable);
++                    stylusPendingLeft = false;
++                    stylusScrolling = true;
++                    stylusMoveTo(stylusDownX, stylusDownY);
++                    float[] p = XForm.transformPoint(xform, stylusDownX, stylusDownY);
++                    stylusScrollLastX = p[0];
++                    stylusScrollLastY = p[1];
++                    stylusScrollAccumX = stylusScrollAccumY = 0;
++                    stylusScrollTo(viewX, viewY);
++                }
++                else if (stylusPendingLeft && Math.hypot(viewX - stylusDownX, viewY - stylusDownY) > touchSlop) {
+                     removeCallbacks(stylusLongPressRunnable);
+                     stylusPendingLeft = false;
+                     // start the drag where the pen landed, then catch up to the current position
+@@ -677,6 +740,7 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+             case MotionEvent.ACTION_POINTER_UP:
+             case MotionEvent.ACTION_CANCEL:
+                 removeCallbacks(stylusLongPressRunnable);
++                stylusScrolling = false;
+                 if (actionMasked != MotionEvent.ACTION_CANCEL) stylusMoveTo(viewX, viewY);
+                 if (stylusPendingLeft && actionMasked != MotionEvent.ACTION_CANCEL) stylusClick(Pointer.Button.BUTTON_LEFT);
+                 stylusPendingLeft = false;
+@@ -736,6 +800,10 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+         this.stylusRightButtonMode = stylusRightButtonMode;
+     }
+ 
++    public void setStylusDragMode(byte stylusDragMode) {
++        this.stylusDragMode = stylusDragMode;
++    }
++
+     public void setStylusLongPressMillis(int stylusLongPressMillis) {
+         this.stylusLongPressMillis = Math.max(100, stylusLongPressMillis);
+     }
+diff --git a/app/src/main/res/layout/settings_fragment.xml b/app/src/main/res/layout/settings_fragment.xml
+index 1ced5c1..3f70bb8 100644
+--- a/app/src/main/res/layout/settings_fragment.xml
++++ b/app/src/main/res/layout/settings_fragment.xml
+@@ -143,6 +143,18 @@
+                             app:maxValue="1500" />
+                     </LinearLayout>
+ 
++                    <TextView
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:layout_marginTop="8dp"
++                        android:text="@string/stylus_drag_mode" />
++
++                    <Spinner
++                        style="@style/ComboBox"
++                        android:id="@+id/SStylusDragMode"
++                        android:layout_width="match_parent"
++                        android:entries="@array/stylus_drag_mode_entries" />
++
+                     <View style="@style/FieldSeparator" />
+ 
+                     <CheckBox
+diff --git a/app/src/main/res/values-pt/strings.xml b/app/src/main/res/values-pt/strings.xml
+index b2c4feb..0bb3c4c 100644
+--- a/app/src/main/res/values-pt/strings.xml
++++ b/app/src/main/res/values-pt/strings.xml
+@@ -309,4 +309,8 @@
+     <string name="stylus_rmb_long_press">Toque longo (segurar a caneta)</string>
+     <string name="keep_running_in_background">Manter o jogo rodando em segundo plano</string>
+     <string name="keep_running_in_background_tooltip">Não pausar os processos do Wine ao trocar de app (por exemplo, o turno da IA continua). Usa mais bateria; o som continua tocando.</string>
++    <string name="stylus_drag_mode">Arrastar com a caneta</string>
++    <string name="stylus_drag_left_button">Arrastar com o botão esquerdo</string>
++    <string name="stylus_drag_scroll_keys">Rolar o mapa (setas)</string>
++    <string name="stylus_drag_scroll_keys_inverted">Rolar o mapa, invertido</string>
+ </resources>
+\ No newline at end of file
+diff --git a/app/src/main/res/values-ru/strings.xml b/app/src/main/res/values-ru/strings.xml
+index f78fa49..bc3d2ad 100644
+--- a/app/src/main/res/values-ru/strings.xml
++++ b/app/src/main/res/values-ru/strings.xml
+@@ -309,4 +309,8 @@
+     <string name="stylus_rmb_long_press">Долгое касание (удержание пера)</string>
+     <string name="keep_running_in_background">Не приостанавливать игру в фоне</string>
+     <string name="keep_running_in_background_tooltip">Не ставить процессы Wine на паузу при переключении на другое приложение (например, ход ИИ продолжает считаться). Больше расход батареи, звук продолжает играть.</string>
++    <string name="stylus_drag_mode">Перетаскивание пером</string>
++    <string name="stylus_drag_left_button">Перетаскивание с левой кнопкой</string>
++    <string name="stylus_drag_scroll_keys">Прокрутка карты (стрелки)</string>
++    <string name="stylus_drag_scroll_keys_inverted">Прокрутка карты, инверсия</string>
+ </resources>
+\ No newline at end of file
+diff --git a/app/src/main/res/values/arrays.xml b/app/src/main/res/values/arrays.xml
+index 0791e96..38f6bf4 100644
+--- a/app/src/main/res/values/arrays.xml
++++ b/app/src/main/res/values/arrays.xml
+@@ -162,4 +162,10 @@
+         <item>@string/stylus_rmb_side_button</item>
+         <item>@string/stylus_rmb_long_press</item>
+     </string-array>
++    <!-- order must match TouchpadView.STYLUS_DRAG_MODE_* -->
++    <string-array name="stylus_drag_mode_entries">
++        <item>@string/stylus_drag_left_button</item>
++        <item>@string/stylus_drag_scroll_keys</item>
++        <item>@string/stylus_drag_scroll_keys_inverted</item>
++    </string-array>
+ </resources>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 0626c32..c9fea06 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -367,4 +367,8 @@
+     <string name="stylus_rmb_long_press">Long press (hold the pen)</string>
+     <string name="keep_running_in_background">Keep the game running in background</string>
+     <string name="keep_running_in_background_tooltip">Do not pause Wine processes when switching to another app (e.g. the AI turn keeps calculating). Uses more battery; sound keeps playing.</string>
++    <string name="stylus_drag_mode">Stylus drag</string>
++    <string name="stylus_drag_left_button">Left mouse button drag</string>
++    <string name="stylus_drag_scroll_keys">Scroll map (arrow keys)</string>
++    <string name="stylus_drag_scroll_keys_inverted">Scroll map, inverted</string>
+ </resources>
+\ No newline at end of file
+-- 
+2.43.0
+

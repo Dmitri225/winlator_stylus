@@ -12,3 +12,6 @@ Patch contents:
 - Background Protection (foreground service) enabled by default, one-time
   battery-optimization exemption request, no activity restart (= session
   loss) on dark mode / font / locale / SIM changes
+- Optional "keep the game running in background" (no SIGSTOP of Wine processes)
+- Stylus input injected off the UI thread (no ANR while the game loads)
+- Optional pen drag = map scroll via arrow keys (HoMM3 grab-and-drag)

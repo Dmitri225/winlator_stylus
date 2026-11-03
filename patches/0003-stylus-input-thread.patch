@@ -1,0 +1,267 @@
+From 99add3f87519423186c45cd42886e86fff681cd7 Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Tue, 3 Nov 2026 12:29:02 +0000
+Subject: [PATCH] Stylus: inject into X server off the UI thread; battery
+ prompt from main screen
+
+- Pen hover produces 100+ events/s; XServer.inject* takes the X server lock,
+  so doing it on the UI thread could block it (ANR) while the game loads.
+  Moves are coalesced and, like button events, applied on a StylusInput thread.
+- Ask for the battery-optimization exemption on the main screen instead of
+  on game start, so the container is not paused while Wine boots.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ .../main/java/com/winlator/MainActivity.java  |  30 +++++
+ .../com/winlator/XServerDisplayActivity.java  |  21 ----
+ .../com/winlator/widget/TouchpadView.java     | 104 +++++++++++++++---
+ 3 files changed, 120 insertions(+), 35 deletions(-)
+
+diff --git a/app/src/main/java/com/winlator/MainActivity.java b/app/src/main/java/com/winlator/MainActivity.java
+index dd126b1..611c61f 100644
+--- a/app/src/main/java/com/winlator/MainActivity.java
++++ b/app/src/main/java/com/winlator/MainActivity.java
+@@ -144,6 +144,36 @@ public class MainActivity extends AppCompatActivity implements NavigationView.On
+         this.openFileCallback = openFileCallback;
+     }
+ 
++    /**
++     * With Background Protection on, ask Android/One UI once to exempt Winlator from battery
++     * optimization ("Unrestricted"), so the foreground service is not throttled or frozen.
++     */
++    private void requestIgnoreBatteryOptimizationsOnce() {
++        try {
++            if (!preferences.getBoolean("enable_background_protection", true)) return;
++            if (preferences.getBoolean("battery_optimization_asked", false)) return;
++            // not while the storage permission dialog is up; we'll come back in onResume
++            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) return;
++            android.os.PowerManager pm = (android.os.PowerManager)getSystemService(POWER_SERVICE);
++            if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) return;
++            preferences.edit().putBoolean("battery_optimization_asked", true).apply();
++            Intent intent = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
++            intent.setData(android.net.Uri.parse("package:" + getPackageName()));
++            startActivity(intent);
++        }
++        catch (Exception e) {
++            android.util.Log.w("MainActivity", "Unable to request battery optimization exemption", e);
++        }
++    }
++
++    @Override
++    protected void onResume() {
++        super.onResume();
++        // asked here instead of on game start: leaving the game screen right as it starts
++        // would pause the container while Wine is booting
++        requestIgnoreBatteryOptimizationsOnce();
++    }
++
+     private boolean requestAppPermissions() {
+         if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
+             ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) return false;
+diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+index 9c95b4b..09ae7a0 100644
+--- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
++++ b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+@@ -148,7 +148,6 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+ 
+         final PreloaderDialog preloaderDialog = new PreloaderDialog(this);
+         preferences = PreferenceManager.getDefaultSharedPreferences(this);
+-        requestIgnoreBatteryOptimizationsOnce();
+         boolean useAndroidClipboardOnWine = preferences.getBoolean("use_android_clipboard_on_wine", false);
+         clipboardManager = useAndroidClipboardOnWine ? (ClipboardManager)getSystemService(CLIPBOARD_SERVICE) : null;
+ 
+@@ -310,26 +309,6 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         }
+     }
+ 
+-    /**
+-     * With Background Protection on, ask Android/One UI once to exempt Winlator from battery
+-     * optimization ("Unrestricted"), so the foreground service is not throttled or frozen.
+-     */
+-    private void requestIgnoreBatteryOptimizationsOnce() {
+-        try {
+-            if (!preferences.getBoolean("enable_background_protection", true)) return;
+-            if (preferences.getBoolean("battery_optimization_asked", false)) return;
+-            android.os.PowerManager pm = (android.os.PowerManager)getSystemService(POWER_SERVICE);
+-            if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) return;
+-            preferences.edit().putBoolean("battery_optimization_asked", true).apply();
+-            Intent intent = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+-            intent.setData(android.net.Uri.parse("package:" + getPackageName()));
+-            startActivity(intent);
+-        }
+-        catch (Exception e) {
+-            android.util.Log.w("XServerDisplayActivity", "Unable to request battery optimization exemption", e);
+-        }
+-    }
+-
+     private boolean isKeepRunningInBackground() {
+         return preferences != null &&
+                preferences.getBoolean("enable_background_protection", true) &&
+diff --git a/app/src/main/java/com/winlator/widget/TouchpadView.java b/app/src/main/java/com/winlator/widget/TouchpadView.java
+index 0c6e15e..dc62a9b 100644
+--- a/app/src/main/java/com/winlator/widget/TouchpadView.java
++++ b/app/src/main/java/com/winlator/widget/TouchpadView.java
+@@ -4,6 +4,8 @@ import android.content.Context;
+ import android.graphics.Color;
+ import android.graphics.drawable.ColorDrawable;
+ import android.graphics.drawable.StateListDrawable;
++import android.os.Handler;
++import android.os.HandlerThread;
+ import android.view.HapticFeedbackConstants;
+ import android.view.InputDevice;
+ import android.view.MotionEvent;
+@@ -62,6 +64,17 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+     private int stylusLastX = Integer.MIN_VALUE, stylusLastY = Integer.MIN_VALUE;
+     private long stylusLastEventTime = 0;
+     private final int touchSlop;
++    // All X server injections from the stylus run on this thread, never on the UI thread:
++    // XServer.inject* takes the X server lock, and blocking the UI thread on it (pen hover
++    // sends 100+ events/s) can freeze Winlator ("app not responding") while the game loads.
++    private HandlerThread stylusInputThread;
++    private Handler stylusInputHandler;
++    private final Object stylusMoveLock = new Object();
++    private boolean stylusMovePosted = false;
++    private boolean stylusMoveAbsPending = false;
++    private int stylusMoveX, stylusMoveY, stylusMoveDx, stylusMoveDy;
++    private volatile int stylusLatestX = Integer.MIN_VALUE, stylusLatestY = Integer.MIN_VALUE;
++    private final Runnable stylusFlushMoveRunnable = this::stylusFlushMove;
+     private final Runnable stylusLongPressRunnable = () -> {
+         if (stylusTipDown && stylusPendingLeft) {
+             stylusPendingLeft = false;
+@@ -497,47 +510,110 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+         return stylusTipDown || (System.currentTimeMillis() - stylusLastEventTime) < STYLUS_PALM_REJECTION_MILLISECONDS;
+     }
+ 
++    private Handler stylusHandler() {
++        if (stylusInputHandler == null) {
++            stylusInputThread = new HandlerThread("StylusInput");
++            stylusInputThread.start();
++            stylusInputHandler = new Handler(stylusInputThread.getLooper());
++        }
++        return stylusInputHandler;
++    }
++
++    @Override
++    protected void onDetachedFromWindow() {
++        super.onDetachedFromWindow();
++        if (stylusInputThread != null) {
++            stylusInputThread.quitSafely();
++            stylusInputThread = null;
++            stylusInputHandler = null;
++        }
++    }
++
++    /** Runs on the input thread: applies the latest coalesced pointer position/delta. */
++    private void stylusFlushMove() {
++        int x, y, dx, dy;
++        boolean abs;
++        synchronized (stylusMoveLock) {
++            stylusMovePosted = false;
++            abs = stylusMoveAbsPending;
++            x = stylusMoveX; y = stylusMoveY;
++            dx = stylusMoveDx; dy = stylusMoveDy;
++            stylusMoveAbsPending = false;
++            stylusMoveDx = stylusMoveDy = 0;
++        }
++        if (abs) xServer.injectPointerMove(x, y);
++        if (dx != 0 || dy != 0) xServer.getWinHandler().mouseEvent(MouseEventFlags.MOVE, dx, dy, 0);
++    }
++
+     private void stylusMoveTo(float viewX, float viewY) {
+         float[] p = XForm.transformPoint(xform, viewX, viewY);
+         int x = (int)p[0];
+         int y = (int)p[1];
+-        if (xServer.isRelativeMouseMovement()) {
+-            if (stylusLastX != Integer.MIN_VALUE) {
+-                int dx = x - stylusLastX;
+-                int dy = y - stylusLastY;
+-                if (dx != 0 || dy != 0) xServer.getWinHandler().mouseEvent(MouseEventFlags.MOVE, dx, dy, 0);
++        boolean changed = false;
++        synchronized (stylusMoveLock) {
++            if (xServer.isRelativeMouseMovement()) {
++                if (stylusLastX != Integer.MIN_VALUE && (x != stylusLastX || y != stylusLastY)) {
++                    stylusMoveDx += x - stylusLastX;
++                    stylusMoveDy += y - stylusLastY;
++                    changed = true;
++                }
++            }
++            else if (x != stylusLastX || y != stylusLastY) {
++                stylusMoveX = stylusLatestX = x;
++                stylusMoveY = stylusLatestY = y;
++                stylusMoveAbsPending = true;
++                changed = true;
++            }
++            if (changed && !stylusMovePosted) {
++                stylusMovePosted = true;
++                stylusHandler().post(stylusFlushMoveRunnable);
+             }
+-        }
+-        else if (x != stylusLastX || y != stylusLastY) {
+-            xServer.injectPointerMove(x, y);
+         }
+         stylusLastX = x;
+         stylusLastY = y;
+     }
+ 
++    /** Button change at the current pen position, ordered after the moves queued before it. */
++    private void stylusPostButton(final Pointer.Button button, final boolean press, long delayMillis) {
++        final boolean abs = !xServer.isRelativeMouseMovement() && stylusLastX != Integer.MIN_VALUE;
++        final int x = stylusLastX, y = stylusLastY;
++        Runnable r = () -> {
++            // press exactly where the pen was when the button event happened...
++            if (abs && press) xServer.injectPointerMove(x, y);
++            boolean pressed = xServer.pointer.isButtonPressed(button);
++            if (press && !pressed) xServer.injectPointerButtonPress(button);
++            else if (!press && pressed) xServer.injectPointerButtonRelease(button);
++            // ...then catch up with wherever the pen is now (a coalesced move may have run earlier)
++            int lx = stylusLatestX, ly = stylusLatestY;
++            if (abs && press && lx != Integer.MIN_VALUE && (lx != x || ly != y)) xServer.injectPointerMove(lx, ly);
++        };
++        if (delayMillis > 0) stylusHandler().postDelayed(r, delayMillis);
++        else stylusHandler().post(r);
++    }
++
+     private void stylusPressTipButton(Pointer.Button button) {
+         stylusReleaseTipButton();
+-        if (!xServer.pointer.isButtonPressed(button)) xServer.injectPointerButtonPress(button);
++        stylusPostButton(button, true, 0);
+         stylusTipButton = button;
+     }
+ 
+     private void stylusReleaseTipButton() {
+         if (stylusTipButton != null) {
+-            if (xServer.pointer.isButtonPressed(stylusTipButton)) xServer.injectPointerButtonRelease(stylusTipButton);
++            stylusPostButton(stylusTipButton, false, 0);
+             stylusTipButton = null;
+         }
+     }
+ 
+     private void stylusClick(final Pointer.Button button) {
+-        xServer.injectPointerButtonPress(button);
++        stylusPostButton(button, true, 0);
+         // same 30ms gap the touchpad uses, so games that poll button state don't miss the click
+-        postDelayed(() -> xServer.injectPointerButtonRelease(button), 30);
++        stylusPostButton(button, false, 30);
+     }
+ 
+     private void stylusReleaseHoverButton() {
+         if (stylusHoverButtonDown) {
+             stylusHoverButtonDown = false;
+-            if (xServer.pointer.isButtonPressed(Pointer.Button.BUTTON_RIGHT)) xServer.injectPointerButtonRelease(Pointer.Button.BUTTON_RIGHT);
++            stylusPostButton(Pointer.Button.BUTTON_RIGHT, false, 0);
+         }
+     }
+ 
+@@ -622,7 +698,7 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+                         boolean pressed = isStylusSideButtonPressed(event);
+                         if (pressed && !stylusHoverButtonDown) {
+                             stylusHoverButtonDown = true;
+-                            if (!xServer.pointer.isButtonPressed(Pointer.Button.BUTTON_RIGHT)) xServer.injectPointerButtonPress(Pointer.Button.BUTTON_RIGHT);
++                            stylusPostButton(Pointer.Button.BUTTON_RIGHT, true, 0);
+                         }
+                         else if (!pressed) stylusReleaseHoverButton();
+                     }
+-- 
+2.43.0
+
