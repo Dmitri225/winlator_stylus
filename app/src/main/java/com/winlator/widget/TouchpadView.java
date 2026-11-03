@@ -4,6 +4,7 @@ import android.content.Context;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.view.HapticFeedbackConstants;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.PointerIcon;
@@ -42,10 +43,13 @@ public class TouchpadView extends View {
     private final float[] xform = XForm.getInstance();
 
     // ---- Stylus (S Pen) support ----
-    public static final short STYLUS_LONG_PRESS_MILLISECONDS = 450;
+    public static final byte STYLUS_RMB_MODE_SIDE_BUTTON = 0;
+    public static final byte STYLUS_RMB_MODE_LONG_PRESS = 1;
+    public static final short DEFAULT_STYLUS_LONG_PRESS_MILLISECONDS = 400;
     public static final short STYLUS_PALM_REJECTION_MILLISECONDS = 300;
     private boolean stylusEnabled = true;
-    private boolean stylusLongPressRightClick = false;
+    private byte stylusRightButtonMode = STYLUS_RMB_MODE_LONG_PRESS;
+    private int stylusLongPressMillis = DEFAULT_STYLUS_LONG_PRESS_MILLISECONDS;
     private boolean stylusHoverButtonRightClick = false;
     private boolean stylusPalmRejection = true;
     private Pointer.Button stylusTipButton = null;
@@ -60,6 +64,8 @@ public class TouchpadView extends View {
         if (stylusTipDown && stylusPendingLeft) {
             stylusPendingLeft = false;
             stylusPressTipButton(Pointer.Button.BUTTON_RIGHT);
+            // tactile confirmation that the long press turned into a right button
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
         }
     };
 
@@ -506,10 +512,11 @@ public class TouchpadView extends View {
                 else if (event.getToolType(index) == MotionEvent.TOOL_TYPE_ERASER) {
                     stylusPressTipButton(Pointer.Button.BUTTON_MIDDLE);
                 }
-                else if (stylusLongPressRightClick) {
-                    // defer LMB: becomes a drag on movement, a click on release, or RMB on long press
+                else if (stylusRightButtonMode == STYLUS_RMB_MODE_LONG_PRESS) {
+                    // defer LMB: short tap = LMB click, movement = LMB drag,
+                    // holding still for N ms = RMB held until the pen is lifted
                     stylusPendingLeft = true;
-                    postDelayed(stylusLongPressRunnable, STYLUS_LONG_PRESS_MILLISECONDS);
+                    postDelayed(stylusLongPressRunnable, stylusLongPressMillis);
                 }
                 else {
                     stylusPressTipButton(Pointer.Button.BUTTON_LEFT);
@@ -517,11 +524,17 @@ public class TouchpadView extends View {
                 break;
             case MotionEvent.ACTION_MOVE:
                 if (!stylusTipDown) break;
-                stylusMoveTo(viewX, viewY);
+                if (!stylusPendingLeft) stylusMoveTo(viewX, viewY);
                 if (stylusPendingLeft && Math.hypot(viewX - stylusDownX, viewY - stylusDownY) > touchSlop) {
                     removeCallbacks(stylusLongPressRunnable);
                     stylusPendingLeft = false;
+                    // start the drag where the pen landed, then catch up to the current position
+                    stylusMoveTo(stylusDownX, stylusDownY);
                     stylusPressTipButton(Pointer.Button.BUTTON_LEFT);
+                    stylusMoveTo(viewX, viewY);
+                }
+                else if (stylusPendingLeft) {
+                    stylusMoveTo(viewX, viewY); // tiny jitter within the slop: still follow the pen
                 }
                 else if (stylusTipButton == Pointer.Button.BUTTON_LEFT && isStylusSideButtonPressed(event)) {
                     // side button pressed after the tip already landed: switch to RMB
@@ -587,8 +600,12 @@ public class TouchpadView extends View {
         this.stylusEnabled = stylusEnabled;
     }
 
-    public void setStylusLongPressRightClick(boolean stylusLongPressRightClick) {
-        this.stylusLongPressRightClick = stylusLongPressRightClick;
+    public void setStylusRightButtonMode(byte stylusRightButtonMode) {
+        this.stylusRightButtonMode = stylusRightButtonMode;
+    }
+
+    public void setStylusLongPressMillis(int stylusLongPressMillis) {
+        this.stylusLongPressMillis = Math.max(100, stylusLongPressMillis);
     }
 
     public void setStylusHoverButtonRightClick(boolean stylusHoverButtonRightClick) {

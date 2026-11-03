@@ -112,8 +112,34 @@ public class SettingsFragment extends Fragment {
 
         final CheckBox cbStylusAbsoluteMode = view.findViewById(R.id.CBStylusAbsoluteMode);
         cbStylusAbsoluteMode.setChecked(preferences.getBoolean("stylus_absolute_mode", true));
-        final CheckBox cbStylusLongPressRMB = view.findViewById(R.id.CBStylusLongPressRMB);
-        cbStylusLongPressRMB.setChecked(preferences.getBoolean("stylus_long_press_rmb", false));
+        final Spinner sStylusRMBMode = view.findViewById(R.id.SStylusRMBMode);
+        final TextView tvStylusLongPress = view.findViewById(R.id.TVStylusLongPress);
+        final SeekBar sbStylusLongPress = view.findViewById(R.id.SBStylusLongPress);
+        final View llStylusLongPress = view.findViewById(R.id.LLStylusLongPress);
+        sbStylusLongPress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                tvStylusLongPress.setText(progress+" ms");
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {}
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+        sbStylusLongPress.setProgress(preferences.getInt("stylus_long_press_ms", com.winlator.widget.TouchpadView.DEFAULT_STYLUS_LONG_PRESS_MILLISECONDS));
+        tvStylusLongPress.setText(sbStylusLongPress.getProgress()+" ms");
+        sStylusRMBMode.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(android.widget.AdapterView<?> parent, View v, int position, long id) {
+                llStylusLongPress.setVisibility(position == com.winlator.widget.TouchpadView.STYLUS_RMB_MODE_LONG_PRESS ? View.VISIBLE : View.GONE);
+            }
+
+            @Override
+            public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+        });
+        sStylusRMBMode.setSelection(preferences.getInt("stylus_rmb_mode", com.winlator.widget.TouchpadView.STYLUS_RMB_MODE_LONG_PRESS));
         final CheckBox cbStylusHoverButtonRMB = view.findViewById(R.id.CBStylusHoverButtonRMB);
         cbStylusHoverButtonRMB.setChecked(preferences.getBoolean("stylus_hover_button_rmb", false));
         final CheckBox cbStylusPalmRejection = view.findViewById(R.id.CBStylusPalmRejection);
@@ -158,7 +184,8 @@ public class SettingsFragment extends Fragment {
             editor.putString("box64_preset", Box86_64PresetManager.getSpinnerSelectedId(sBox64Preset));
             editor.putBoolean("use_dri3", cbUseDRI3.isChecked());
             editor.putBoolean("stylus_absolute_mode", cbStylusAbsoluteMode.isChecked());
-            editor.putBoolean("stylus_long_press_rmb", cbStylusLongPressRMB.isChecked());
+            editor.putInt("stylus_rmb_mode", sStylusRMBMode.getSelectedItemPosition());
+            editor.putInt("stylus_long_press_ms", sbStylusLongPress.getProgress());
             editor.putBoolean("stylus_hover_button_rmb", cbStylusHoverButtonRMB.isChecked());
             editor.putBoolean("stylus_palm_rejection", cbStylusPalmRejection.isChecked());
             editor.putFloat("cursor_speed", sbCursorSpeed.getProgress() / 100.0f);

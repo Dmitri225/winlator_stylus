@@ -196,11 +196,49 @@
                         android:layout_height="wrap_content"
                         android:text="@string/stylus_absolute_mode" />
 
-                    <CheckBox
-                        android:id="@+id/CBStylusLongPressRMB"
+                    <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="@string/stylus_long_press_rmb" />
+                        android:layout_marginTop="8dp"
+                        android:text="@string/stylus_rmb_mode" />
+
+                    <Spinner
+                        style="@style/ComboBox"
+                        android:id="@+id/SStylusRMBMode"
+                        android:layout_width="match_parent"
+                        android:entries="@array/stylus_rmb_mode_entries" />
+
+                    <LinearLayout
+                        android:id="@+id/LLStylusLongPress"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:layout_marginTop="8dp">
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="@string/stylus_long_press_time"/>
+
+                            <TextView
+                                android:id="@+id/TVStylusLongPress"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content" />
+                        </LinearLayout>
+
+                        <SeekBar
+                            android:id="@+id/SBStylusLongPress"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:min="150"
+                            android:max="1500" />
+                    </LinearLayout>
 
                     <CheckBox
                         android:id="@+id/CBStylusHoverButtonRMB"

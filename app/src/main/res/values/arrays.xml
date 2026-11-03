@@ -15,6 +15,11 @@
         <item>1600x900 (16:9)</item>
         <item>1920x1080 (16:9)</item>
     </string-array>
+    <!-- order must match TouchpadView.STYLUS_RMB_MODE_* -->
+    <string-array name="stylus_rmb_mode_entries">
+        <item>Side button + touch</item>
+        <item>Long press (hold the pen)</item>
+    </string-array>
     <string-array name="graphics_driver_entries">
         <item>Turnip (Adreno)</item>
         <item>VirGL (Universal)</item>
