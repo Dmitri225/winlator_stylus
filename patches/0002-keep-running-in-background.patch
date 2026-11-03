@@ -1,0 +1,154 @@
+From 6db0f942050f75071e3d2c46348c478ce82162aa Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Tue, 3 Nov 2026 11:50:24 +0000
+Subject: [PATCH] Option: keep the game running in background
+
+New checkbox under Background Protection. When enabled, Wine/Box64
+processes are not SIGSTOPped while Winlator is not visible, so e.g. the
+HoMM3 AI turn keeps calculating. Rendering still pauses. Default off.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ app/src/main/java/com/winlator/SettingsFragment.java   |  7 +++++++
+ .../main/java/com/winlator/XServerDisplayActivity.java | 10 +++++++++-
+ app/src/main/res/layout/settings_fragment.xml          | 10 ++++++++++
+ app/src/main/res/values-pt/strings.xml                 |  2 ++
+ app/src/main/res/values-ru/strings.xml                 |  4 +++-
+ app/src/main/res/values/strings.xml                    |  2 ++
+ 6 files changed, 33 insertions(+), 2 deletions(-)
+
+diff --git a/app/src/main/java/com/winlator/SettingsFragment.java b/app/src/main/java/com/winlator/SettingsFragment.java
+index b20575c..dd43a6b 100644
+--- a/app/src/main/java/com/winlator/SettingsFragment.java
++++ b/app/src/main/java/com/winlator/SettingsFragment.java
+@@ -169,11 +169,16 @@ public class SettingsFragment extends Fragment {
+         final CheckBox cbEnableBackgroundWakelock = view.findViewById(R.id.CBEnableBackgroundWakelock);
+         cbEnableBackgroundWakelock.setChecked(preferences.getBoolean("enable_background_wakelock", false));
+ 
++        final CheckBox cbKeepRunningInBackground = view.findViewById(R.id.CBKeepRunningInBackground);
++        cbKeepRunningInBackground.setChecked(preferences.getBoolean("keep_running_in_background", false));
++
+         final CheckBox cbEnableBackgroundProtection = view.findViewById(R.id.CBEnableBackgroundProtection);
+         cbEnableBackgroundProtection.setChecked(preferences.getBoolean("enable_background_protection", true));
+         cbEnableBackgroundProtection.setOnCheckedChangeListener((buttonView, isChecked) -> {
+             cbEnableBackgroundWakelock.setVisibility(isChecked ? View.VISIBLE : View.GONE);
+             if (!isChecked) cbEnableBackgroundWakelock.setChecked(false);
++            cbKeepRunningInBackground.setVisibility(isChecked ? View.VISIBLE : View.GONE);
++            if (!isChecked) cbKeepRunningInBackground.setChecked(false);
+ 
+             if (isChecked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+@@ -191,6 +196,7 @@ public class SettingsFragment extends Fragment {
+             }
+         });
+         cbEnableBackgroundWakelock.setVisibility(cbEnableBackgroundProtection.isChecked() ? View.VISIBLE : View.GONE);
++        cbKeepRunningInBackground.setVisibility(cbEnableBackgroundProtection.isChecked() ? View.VISIBLE : View.GONE);
+ 
+         final CheckBox cbSaveMemOnRunFromSteam = view.findViewById(R.id.CBSaveMemOnRunFromSteam);
+         cbSaveMemOnRunFromSteam.setChecked(preferences.getBoolean("save_mem_on_run_from_steam", true));
+@@ -265,6 +271,7 @@ public class SettingsFragment extends Fragment {
+             editor.putBoolean("use_android_clipboard_on_wine", cbUseAndroidClipboardOnWine.isChecked());
+             editor.putBoolean("enable_background_protection", cbEnableBackgroundProtection.isChecked());
+             editor.putBoolean("enable_background_wakelock", cbEnableBackgroundWakelock.isChecked());
++            editor.putBoolean("keep_running_in_background", cbKeepRunningInBackground.isChecked());
+             editor.putBoolean("save_mem_on_run_from_steam", cbSaveMemOnRunFromSteam.isChecked());
+             putGamepadPlayerConfigs(view, editor);
+ 
+diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+index 5a3df03..9c95b4b 100644
+--- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
++++ b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+@@ -330,6 +330,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         }
+     }
+ 
++    private boolean isKeepRunningInBackground() {
++        return preferences != null &&
++               preferences.getBoolean("enable_background_protection", true) &&
++               preferences.getBoolean("keep_running_in_background", false);
++    }
++
+     @Override
+     public void onResume() {
+         super.onResume();
+@@ -345,7 +351,9 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         ForegroundService.onPauseSession(this);
+         super.onPause();
+         if (environment != null && !isInPictureInPictureMode()) {
+-            environment.onPause();
++            // Stock behaviour: SIGSTOP the Wine/Box64 processes while Winlator is not visible.
++            // Optional: keep them running (e.g. HoMM3 AI turn) under the foreground service.
++            if (!isKeepRunningInBackground()) environment.onPause();
+             xServerView.onPause();
+         }
+     }
+diff --git a/app/src/main/res/layout/settings_fragment.xml b/app/src/main/res/layout/settings_fragment.xml
+index 51f7478..1ced5c1 100644
+--- a/app/src/main/res/layout/settings_fragment.xml
++++ b/app/src/main/res/layout/settings_fragment.xml
+@@ -376,6 +376,16 @@
+                         android:text="@string/enable_background_wakelock"
+                         android:tooltipText="@string/enable_background_wakelock_tooltip" />
+ 
++                    <CheckBox
++                        android:id="@+id/CBKeepRunningInBackground"
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:layout_marginTop="4dp"
++                        android:layout_marginStart="24dp"
++                        android:visibility="gone"
++                        android:text="@string/keep_running_in_background"
++                        android:tooltipText="@string/keep_running_in_background_tooltip" />
++
+                     <CheckBox
+                         android:id="@+id/CBSaveMemOnRunFromSteam"
+                         android:layout_width="wrap_content"
+diff --git a/app/src/main/res/values-pt/strings.xml b/app/src/main/res/values-pt/strings.xml
+index 03fb8fe..b2c4feb 100644
+--- a/app/src/main/res/values-pt/strings.xml
++++ b/app/src/main/res/values-pt/strings.xml
+@@ -307,4 +307,6 @@
+     <string name="stylus_palm_rejection">Ignorar toques dos dedos ao usar a caneta</string>
+     <string name="stylus_rmb_side_button">Botão lateral + toque</string>
+     <string name="stylus_rmb_long_press">Toque longo (segurar a caneta)</string>
++    <string name="keep_running_in_background">Manter o jogo rodando em segundo plano</string>
++    <string name="keep_running_in_background_tooltip">Não pausar os processos do Wine ao trocar de app (por exemplo, o turno da IA continua). Usa mais bateria; o som continua tocando.</string>
+ </resources>
+\ No newline at end of file
+diff --git a/app/src/main/res/values-ru/strings.xml b/app/src/main/res/values-ru/strings.xml
+index b59f06c..f78fa49 100644
+--- a/app/src/main/res/values-ru/strings.xml
++++ b/app/src/main/res/values-ru/strings.xml
+@@ -293,7 +293,7 @@
+     <string name="renderer">Рендерер</string>
+     <string name="default_no_override">Стандартный (без замены)</string>
+     <string name="fgs_notification_channel_desc">Поддерживает работу Winlator в фоновом режиме, чтобы приостановленная сессия Wine не прерывалась управлением фоновыми процессами Android.</string>
+-    <string name="fgs_notification_content_container_background">Сессия контейнера приостановлена в фоновом режиме</string>
++    <string name="fgs_notification_content_container_background">Сессия контейнера работает в фоновом режиме</string>
+     <string name="fgs_notification_content_container_foreground">Запущен контейнерный сеанс</string>
+     <string name="fgs_notification_content_else">Winlator работает в фоновом режиме</string>
+     <string name="enable_background_wakelock">Включить wakelock, когда устройство заблокировано</string>
+@@ -307,4 +307,6 @@
+     <string name="stylus_palm_rejection">Игнорировать касания пальцами при работе стилусом</string>
+     <string name="stylus_rmb_side_button">Боковая кнопка + касание</string>
+     <string name="stylus_rmb_long_press">Долгое касание (удержание пера)</string>
++    <string name="keep_running_in_background">Не приостанавливать игру в фоне</string>
++    <string name="keep_running_in_background_tooltip">Не ставить процессы Wine на паузу при переключении на другое приложение (например, ход ИИ продолжает считаться). Больше расход батареи, звук продолжает играть.</string>
+ </resources>
+\ No newline at end of file
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 4e53758..0626c32 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -365,4 +365,6 @@
+     <string name="stylus_palm_rejection">Ignore finger touches while using stylus</string>
+     <string name="stylus_rmb_side_button">Side button + touch</string>
+     <string name="stylus_rmb_long_press">Long press (hold the pen)</string>
++    <string name="keep_running_in_background">Keep the game running in background</string>
++    <string name="keep_running_in_background_tooltip">Do not pause Wine processes when switching to another app (e.g. the AI turn keeps calculating). Uses more battery; sound keeps playing.</string>
+ </resources>
+\ No newline at end of file
+-- 
+2.43.0
+
