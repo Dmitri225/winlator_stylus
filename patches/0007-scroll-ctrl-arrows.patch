@@ -1,0 +1,92 @@
+From 1d34dd4c9bd6aaaa6be59c3e66bc533181b70134 Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Tue, 3 Nov 2026 13:47:39 +0000
+Subject: [PATCH] Stylus map scroll: send Ctrl+arrows instead of plain arrows
+
+In HoMM3/HotA plain arrow keys move the selected hero (so dragging the
+map also walked the hero along the plotted path); Ctrl+arrows scroll the
+adventure map. Ctrl is pressed/released around every tap so it can't stick.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ .../java/com/winlator/widget/TouchpadView.java     | 14 +++++++++++---
+ app/src/main/res/values-pt/strings.xml             |  2 +-
+ app/src/main/res/values-ru/strings.xml             |  2 +-
+ app/src/main/res/values/strings.xml                |  2 +-
+ 4 files changed, 14 insertions(+), 6 deletions(-)
+
+diff --git a/app/src/main/java/com/winlator/widget/TouchpadView.java b/app/src/main/java/com/winlator/widget/TouchpadView.java
+index ed6280b..2ae0a0b 100644
+--- a/app/src/main/java/com/winlator/widget/TouchpadView.java
++++ b/app/src/main/java/com/winlator/widget/TouchpadView.java
+@@ -701,7 +701,7 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+     }
+ 
+     /**
+-     * "Grab and drag" map scrolling: converts pen movement into arrow key taps, one tap per
++     * "Grab and drag" map scrolling: converts pen movement into Ctrl+arrow key taps, one tap per
+      * STYLUS_SCROLL_STEP pixels. Dragging right moves the map content right (view goes left).
+      */
+     private void stylusScrollTo(float viewX, float viewY) {
+@@ -730,8 +730,16 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+         if (t - now > STYLUS_SCROLL_MAX_BACKLOG) return; // pen moves faster than the game scrolls
+         stylusNextKeyTapTime = t + STYLUS_SCROLL_KEY_INTERVAL;
+         Handler h = stylusHandler();
+-        h.postAtTime(() -> xServer.injectKeyPress(key), t);
+-        h.postAtTime(() -> xServer.injectKeyRelease(key), t + STYLUS_SCROLL_KEY_INTERVAL / 2);
++        // Ctrl+arrow: in HoMM3/HotA plain arrows MOVE the selected hero, Ctrl+arrows scroll the map.
++        // Each tap is self-contained (Ctrl pressed and released around it), so Ctrl can never stick.
++        h.postAtTime(() -> {
++            xServer.injectKeyPress(XKeycode.KEY_CTRL_L);
++            xServer.injectKeyPress(key);
++        }, t);
++        h.postAtTime(() -> {
++            xServer.injectKeyRelease(key);
++            xServer.injectKeyRelease(XKeycode.KEY_CTRL_L);
++        }, t + STYLUS_SCROLL_KEY_INTERVAL / 2);
+     }
+ 
+     private boolean handleStylusTouchEvent(MotionEvent event) {
+diff --git a/app/src/main/res/values-pt/strings.xml b/app/src/main/res/values-pt/strings.xml
+index 422e892..bfa5fd8 100644
+--- a/app/src/main/res/values-pt/strings.xml
++++ b/app/src/main/res/values-pt/strings.xml
+@@ -311,7 +311,7 @@
+     <string name="keep_running_in_background_tooltip">Não pausar os processos do Wine ao trocar de app (por exemplo, o turno da IA continua). Usa mais bateria; o som continua tocando.</string>
+     <string name="stylus_drag_mode">Arrastar com a caneta</string>
+     <string name="stylus_drag_left_button">Arrastar com o botão esquerdo</string>
+-    <string name="stylus_drag_scroll_keys">Rolar o mapa (setas)</string>
++    <string name="stylus_drag_scroll_keys">Rolar o mapa (Ctrl+setas)</string>
+     <string name="stylus_drag_scroll_keys_inverted">Rolar o mapa, invertido</string>
+     <string name="sync_cursor_on_finger_tap">Mover o cursor para o dedo antes do clique por toque</string>
+     <string name="finger_long_press_rmb">Toque longo com o dedo = botão direito</string>
+diff --git a/app/src/main/res/values-ru/strings.xml b/app/src/main/res/values-ru/strings.xml
+index ad731d1..7466315 100644
+--- a/app/src/main/res/values-ru/strings.xml
++++ b/app/src/main/res/values-ru/strings.xml
+@@ -311,7 +311,7 @@
+     <string name="keep_running_in_background_tooltip">Не ставить процессы Wine на паузу при переключении на другое приложение (например, ход ИИ продолжает считаться). Больше расход батареи, звук продолжает играть.</string>
+     <string name="stylus_drag_mode">Перетаскивание пером</string>
+     <string name="stylus_drag_left_button">Перетаскивание с левой кнопкой</string>
+-    <string name="stylus_drag_scroll_keys">Прокрутка карты (стрелки)</string>
++    <string name="stylus_drag_scroll_keys">Прокрутка карты (Ctrl+стрелки)</string>
+     <string name="stylus_drag_scroll_keys_inverted">Прокрутка карты, инверсия</string>
+     <string name="sync_cursor_on_finger_tap">Сначала синхронизировать курсор мыши при тапе пальцем</string>
+     <string name="finger_long_press_rmb">Длинный тап пальцем = ПКМ</string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index e89ba5c..c674701 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -369,7 +369,7 @@
+     <string name="keep_running_in_background_tooltip">Do not pause Wine processes when switching to another app (e.g. the AI turn keeps calculating). Uses more battery; sound keeps playing.</string>
+     <string name="stylus_drag_mode">Stylus drag</string>
+     <string name="stylus_drag_left_button">Left mouse button drag</string>
+-    <string name="stylus_drag_scroll_keys">Scroll map (arrow keys)</string>
++    <string name="stylus_drag_scroll_keys">Scroll map (Ctrl+arrow keys)</string>
+     <string name="stylus_drag_scroll_keys_inverted">Scroll map, inverted</string>
+     <string name="sync_cursor_on_finger_tap">Move the mouse cursor to the finger before a tap click</string>
+     <string name="finger_long_press_rmb">Long finger press = right mouse button</string>
+-- 
+2.43.0
+
