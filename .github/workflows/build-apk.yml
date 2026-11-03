@@ -59,6 +59,18 @@ jobs:
           echo "$IMAGEFS_SHA256  $dst" | sha256sum -c -
           ls -la "$dst"
 
+      - name: Fetch OpenXR-SDK submodule (gitlink without .gitmodules upstream)
+        run: |
+          set -e
+          d=app/src/main/cpp/OpenXR-SDK
+          sha=$(git ls-tree HEAD "$d" | awk '{print $3}')
+          echo "OpenXR-SDK pinned at $sha"
+          rm -rf "$d" && mkdir -p "$d" && cd "$d"
+          git init -q
+          git fetch -q --depth 1 https://github.com/KhronosGroup/OpenXR-SDK "$sha"
+          git checkout -q FETCH_HEAD
+          ls
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
