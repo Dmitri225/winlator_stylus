@@ -18,3 +18,5 @@ Patch contents:
 - Correct pen/finger mapping in Fullscreen mode
 - Finger tap moves the cursor to the finger before clicking (setting, default on)
 - New containers: WineD3D with GDI renderer by default
+- Fullscreen stretches the game window to the whole display (setting, default on)
+- Long finger press = right mouse button (setting, default on)

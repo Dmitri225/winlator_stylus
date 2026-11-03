@@ -1,0 +1,308 @@
+From bf623af673a2c3cd50be0502e59bca1c543003d9 Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Tue, 3 Nov 2026 13:14:39 +0000
+Subject: [PATCH] Stretched fullscreen and finger long press = right button
+
+- Setting 'Fullscreen: stretch the game to the whole display' (default on):
+  when Fullscreen is on, borderless game windows smaller than the X screen
+  are stretched to the whole screen ignoring aspect ratio (reuses the
+  Force Fullscreen window transformation, so pointer events map correctly);
+  turning Fullscreen off restores 1:1 mapping.
+- Setting 'Long finger press = right mouse button' (default on): one finger
+  held still for the long-press time presses RMB (cursor synced to the
+  finger) until lifted; moving or a second finger cancels; short tap = LMB.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ .../java/com/winlator/SettingsFragment.java   |  6 +++
+ .../com/winlator/XServerDisplayActivity.java  |  2 +
+ .../renderer/FullscreenTransformation.java    | 12 ++++++
+ .../com/winlator/renderer/GLRenderer.java     | 19 +++++++--
+ .../com/winlator/widget/TouchpadView.java     | 39 +++++++++++++++++++
+ app/src/main/res/layout/settings_fragment.xml | 14 +++++++
+ app/src/main/res/values-pt/strings.xml        |  2 +
+ app/src/main/res/values-ru/strings.xml        |  2 +
+ app/src/main/res/values/strings.xml           |  2 +
+ 9 files changed, 94 insertions(+), 4 deletions(-)
+
+diff --git a/app/src/main/java/com/winlator/SettingsFragment.java b/app/src/main/java/com/winlator/SettingsFragment.java
+index 7cba103..a8cda9f 100644
+--- a/app/src/main/java/com/winlator/SettingsFragment.java
++++ b/app/src/main/java/com/winlator/SettingsFragment.java
+@@ -156,6 +156,10 @@ public class SettingsFragment extends Fragment {
+         sStylusDragMode.setSelection(preferences.getInt("stylus_drag_mode", com.winlator.widget.TouchpadView.STYLUS_DRAG_MODE_LEFT_BUTTON));
+         final CheckBox cbStylusHoverButtonRMB = view.findViewById(R.id.CBStylusHoverButtonRMB);
+         cbStylusHoverButtonRMB.setChecked(preferences.getBoolean("stylus_hover_button_rmb", false));
++        final CheckBox cbFingerLongPressRMB = view.findViewById(R.id.CBFingerLongPressRMB);
++        cbFingerLongPressRMB.setChecked(preferences.getBoolean("finger_long_press_rmb", true));
++        final CheckBox cbStretchFullscreen = view.findViewById(R.id.CBStretchFullscreen);
++        cbStretchFullscreen.setChecked(preferences.getBoolean("stretch_fullscreen", true));
+         final CheckBox cbSyncCursorOnFingerTap = view.findViewById(R.id.CBSyncCursorOnFingerTap);
+         cbSyncCursorOnFingerTap.setChecked(preferences.getBoolean("sync_cursor_on_finger_tap", true));
+         final CheckBox cbStylusPalmRejection = view.findViewById(R.id.CBStylusPalmRejection);
+@@ -267,6 +271,8 @@ public class SettingsFragment extends Fragment {
+             editor.putBoolean("stylus_hover_button_rmb", cbStylusHoverButtonRMB.isChecked());
+             editor.putBoolean("stylus_palm_rejection", cbStylusPalmRejection.isChecked());
+             editor.putBoolean("sync_cursor_on_finger_tap", cbSyncCursorOnFingerTap.isChecked());
++            editor.putBoolean("finger_long_press_rmb", cbFingerLongPressRMB.isChecked());
++            editor.putBoolean("stretch_fullscreen", cbStretchFullscreen.isChecked());
+             editor.putFloat("cursor_speed", sbCursorSpeed.getValue() / 100.0f);
+             editor.putFloat("cursor_scale", sbCursorSize.getValue() / 100.0f);
+             editor.putInt("cursor_color", cpvCursorColor.getColor());
+diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+index d0281aa..e456cde 100644
+--- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
++++ b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+@@ -600,6 +600,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         touchpadView = new TouchpadView(this, xServer, capturePointerOnExternalMouse);
+         touchpadView.setSensitivity(globalCursorSpeed);
+         touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", false));
++        touchpadView.setFingerLongPressRightClick(preferences.getBoolean("finger_long_press_rmb", true));
++        renderer.setStretchFullscreen(preferences.getBoolean("stretch_fullscreen", true));
+         touchpadView.setSyncCursorOnFingerTap(preferences.getBoolean("sync_cursor_on_finger_tap", true));
+         touchpadView.setStylusEnabled(preferences.getBoolean("stylus_absolute_mode", true));
+         touchpadView.setStylusRightButtonMode((byte)preferences.getInt("stylus_rmb_mode", TouchpadView.STYLUS_RMB_MODE_LONG_PRESS));
+diff --git a/app/src/main/java/com/winlator/renderer/FullscreenTransformation.java b/app/src/main/java/com/winlator/renderer/FullscreenTransformation.java
+index 45526fd..a147244 100644
+--- a/app/src/main/java/com/winlator/renderer/FullscreenTransformation.java
++++ b/app/src/main/java/com/winlator/renderer/FullscreenTransformation.java
+@@ -15,6 +15,18 @@ public class FullscreenTransformation {
+     }
+ 
+     public void update(ScreenInfo screenInfo, short originWidth, short originHeight) {
++        update(screenInfo, originWidth, originHeight, false);
++    }
++
++    /** stretch = fill the whole X screen, ignoring the window's aspect ratio. */
++    public void update(ScreenInfo screenInfo, short originWidth, short originHeight, boolean stretch) {
++        if (stretch) {
++            this.x = 0;
++            this.y = 0;
++            this.width = screenInfo.width;
++            this.height = screenInfo.height;
++            return;
++        }
+         short targetHeight = (short)Math.min(screenInfo.height, ((float)screenInfo.width / originWidth) * originHeight);
+         short targetWidth = (short)(((float)targetHeight / originHeight) * originWidth);
+         this.x = (short)((screenInfo.width - targetWidth) * 0.5f);
+diff --git a/app/src/main/java/com/winlator/renderer/GLRenderer.java b/app/src/main/java/com/winlator/renderer/GLRenderer.java
+index 48a8344..430b83d 100644
+--- a/app/src/main/java/com/winlator/renderer/GLRenderer.java
++++ b/app/src/main/java/com/winlator/renderer/GLRenderer.java
+@@ -52,6 +52,7 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+     private final ArrayList<RenderableWindow> renderableWindows = new ArrayList<>();
+     private boolean forceWindowsFullscreen;
+     private boolean fullscreen = false;
++    private boolean stretchFullscreen = false;
+     private boolean toggleFullscreen = false;
+     protected boolean viewportNeedsUpdate = true;
+     private boolean cursorVisible = true;
+@@ -111,6 +112,7 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+             fullscreen = !fullscreen;
+             toggleFullscreen = false;
+             viewportNeedsUpdate = true;
++            if (stretchFullscreen) updateScene(); // (un)stretch game windows to the whole screen
+         }
+ 
+         if (effectComposer.hasEffects()) {
+@@ -297,7 +299,8 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+             Window parent = window.getParent();
+             boolean transparent = window.attributes.isTransparent() || parent.attributes.isTransparent() || parent.isLayered() || window.isLayered();
+ 
+-            if (forceWindowsFullscreen) {
++            boolean stretchWindows = fullscreen && stretchFullscreen;
++            if (forceWindowsFullscreen || stretchWindows) {
+                 short width = window.getWidth();
+                 short height = window.getHeight();
+                 FullscreenTransformation fullscreenTransformation = null;
+@@ -306,12 +309,12 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+                 if (window.getType() == Window.Type.NORMAL && inBounds && window.hasNoDecorations()) {
+                     fullscreenTransformation = window.getFullscreenTransformation();
+                     if (fullscreenTransformation == null) window.setFullscreenTransformation(fullscreenTransformation = new FullscreenTransformation(window));
+-                    fullscreenTransformation.update(xServer.screenInfo, window.getWidth(), window.getHeight());
++                    fullscreenTransformation.update(xServer.screenInfo, window.getWidth(), window.getHeight(), stretchWindows);
+ 
+                     if (parent != xServer.windowManager.rootWindow && parent.getChildCount() == 1 && parent.hasDecoration(Decoration.BORDER) && parent.hasDecoration(Decoration.TITLE)) {
+                         FullscreenTransformation parentFullscreenTransformation = parent.getFullscreenTransformation();
+                         if (parentFullscreenTransformation == null) parent.setFullscreenTransformation(parentFullscreenTransformation = new FullscreenTransformation(parent));
+-                        parentFullscreenTransformation.update(xServer.screenInfo, parent.getWidth(), parent.getHeight());
++                        parentFullscreenTransformation.update(xServer.screenInfo, parent.getWidth(), parent.getHeight(), stretchWindows);
+ 
+                         removeRenderableWindow(parent);
+                     }
+@@ -321,7 +324,11 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+ 
+                 renderableWindows.add(new RenderableWindow(window.getContent(), x, y, transparent, fullscreenTransformation));
+             }
+-            else renderableWindows.add(new RenderableWindow(window.getContent(), x, y, transparent, null));
++            else {
++                // drop a stretch left over from a previous Fullscreen state, so input maps 1:1 again
++                if (window.getFullscreenTransformation() != null) window.setFullscreenTransformation(null);
++                renderableWindows.add(new RenderableWindow(window.getContent(), x, y, transparent, null));
++            }
+         }
+ 
+         if (window.attributes.isRenderSubwindows()) {
+@@ -393,6 +400,10 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+         this.forceWindowsFullscreen = forceWindowsFullscreen;
+     }
+ 
++    public void setStretchFullscreen(boolean stretchFullscreen) {
++        this.stretchFullscreen = stretchFullscreen;
++    }
++
+     public boolean isFullscreen() {
+         return fullscreen;
+     }
+diff --git a/app/src/main/java/com/winlator/widget/TouchpadView.java b/app/src/main/java/com/winlator/widget/TouchpadView.java
+index ac1708d..ed6280b 100644
+--- a/app/src/main/java/com/winlator/widget/TouchpadView.java
++++ b/app/src/main/java/com/winlator/widget/TouchpadView.java
+@@ -41,6 +41,10 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+     private boolean pointerButtonRightEnabled = true;
+     private boolean moveCursorToTouchpoint = false;
+     private boolean syncCursorOnFingerTap = true;
++    private boolean fingerLongPressRightClick = true;
++    private Finger fingerLongPress = null;
++    private boolean fingerLongPressRmbHeld = false;
++    private final Runnable fingerLongPressRunnable = this::onFingerLongPress;
+     private Finger fingerPointerButtonLeft;
+     private Finger fingerPointerButtonRight;
+     private float scrollAccumY = 0;
+@@ -243,6 +247,12 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+                 scrolling = false;
+                 fingers[pointerId] = new Finger(event.getX(actionIndex), event.getY(actionIndex));
+                 numFingers++;
++                // one finger held still = right button (held until lifted); a second finger cancels it
++                fingerLongPressCancel();
++                if (fingerLongPressRightClick && numFingers == 1) {
++                    fingerLongPress = fingers[pointerId];
++                    postDelayed(fingerLongPressRunnable, stylusLongPressMillis);
++                }
+                 break;
+             case MotionEvent.ACTION_MOVE:
+                 if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+@@ -255,9 +265,13 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+                             int pointerIndex = event.findPointerIndex(i);
+                             if (pointerIndex >= 0) {
+                                 fingers[i].update(event.getX(pointerIndex), event.getY(pointerIndex));
++                                if (fingers[i] == fingerLongPress && !fingerLongPressRmbHeld && fingers[i].travelDistance() >= MAX_TAP_TRAVEL_DISTANCE) {
++                                    fingerLongPressCancel();
++                                }
+                                 handleFingerMove(fingers[i]);
+                             }
+                             else {
++                                if (fingers[i] == fingerLongPress) fingerLongPressCancel();
+                                 handleFingerUp(fingers[i]);
+                                 fingers[i] = null;
+                                 numFingers--;
+@@ -270,12 +284,14 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+             case MotionEvent.ACTION_POINTER_UP:
+                 if (fingers[pointerId] != null) {
+                     fingers[pointerId].update(event.getX(actionIndex), event.getY(actionIndex));
++                    if (fingers[pointerId] == fingerLongPress) fingerLongPressCancel();
+                     handleFingerUp(fingers[pointerId]);
+                     fingers[pointerId] = null;
+                     numFingers--;
+                 }
+                 break;
+             case MotionEvent.ACTION_CANCEL:
++                fingerLongPressCancel();
+                 for (byte i = 0; i < MAX_FINGERS; i++) fingers[i] = null;
+                 numFingers = 0;
+                 break;
+@@ -447,6 +463,29 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+         return moveCursorToTouchpoint;
+     }
+ 
++    private void onFingerLongPress() {
++        Finger f = fingerLongPress;
++        if (f == null || numFingers != 1 || !isEnabled() || !pointerButtonRightEnabled) return;
++        if (syncCursorOnFingerTap && !xServer.isRelativeMouseMovement()) xServer.injectPointerMove(f.x, f.y);
++        if (!xServer.pointer.isButtonPressed(Pointer.Button.BUTTON_RIGHT)) xServer.injectPointerButtonPress(Pointer.Button.BUTTON_RIGHT);
++        fingerLongPressRmbHeld = true;
++        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
++    }
++
++    /** Stops a pending finger long press and releases the right button if it was engaged. */
++    private void fingerLongPressCancel() {
++        removeCallbacks(fingerLongPressRunnable);
++        fingerLongPress = null;
++        if (fingerLongPressRmbHeld) {
++            fingerLongPressRmbHeld = false;
++            if (xServer.pointer.isButtonPressed(Pointer.Button.BUTTON_RIGHT)) xServer.injectPointerButtonRelease(Pointer.Button.BUTTON_RIGHT);
++        }
++    }
++
++    public void setFingerLongPressRightClick(boolean fingerLongPressRightClick) {
++        this.fingerLongPressRightClick = fingerLongPressRightClick;
++    }
++
+     public void setSyncCursorOnFingerTap(boolean syncCursorOnFingerTap) {
+         this.syncCursorOnFingerTap = syncCursorOnFingerTap;
+     }
+diff --git a/app/src/main/res/layout/settings_fragment.xml b/app/src/main/res/layout/settings_fragment.xml
+index e9002eb..aadec6a 100644
+--- a/app/src/main/res/layout/settings_fragment.xml
++++ b/app/src/main/res/layout/settings_fragment.xml
+@@ -176,6 +176,20 @@
+                         android:layout_height="wrap_content"
+                         android:text="@string/sync_cursor_on_finger_tap"
+                         android:layout_marginTop="8dp" />
++
++                    <CheckBox
++                        android:id="@+id/CBFingerLongPressRMB"
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:text="@string/finger_long_press_rmb"
++                        android:layout_marginTop="8dp" />
++
++                    <CheckBox
++                        android:id="@+id/CBStretchFullscreen"
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:text="@string/stretch_fullscreen"
++                        android:layout_marginTop="8dp" />
+                 </LinearLayout>
+ 
+                 <TextView
+diff --git a/app/src/main/res/values-pt/strings.xml b/app/src/main/res/values-pt/strings.xml
+index e57477a..422e892 100644
+--- a/app/src/main/res/values-pt/strings.xml
++++ b/app/src/main/res/values-pt/strings.xml
+@@ -314,4 +314,6 @@
+     <string name="stylus_drag_scroll_keys">Rolar o mapa (setas)</string>
+     <string name="stylus_drag_scroll_keys_inverted">Rolar o mapa, invertido</string>
+     <string name="sync_cursor_on_finger_tap">Mover o cursor para o dedo antes do clique por toque</string>
++    <string name="finger_long_press_rmb">Toque longo com o dedo = botão direito</string>
++    <string name="stretch_fullscreen">Tela cheia: esticar o jogo para a tela inteira (ignorar proporção)</string>
+ </resources>
+\ No newline at end of file
+diff --git a/app/src/main/res/values-ru/strings.xml b/app/src/main/res/values-ru/strings.xml
+index 7af2cc7..ad731d1 100644
+--- a/app/src/main/res/values-ru/strings.xml
++++ b/app/src/main/res/values-ru/strings.xml
+@@ -314,4 +314,6 @@
+     <string name="stylus_drag_scroll_keys">Прокрутка карты (стрелки)</string>
+     <string name="stylus_drag_scroll_keys_inverted">Прокрутка карты, инверсия</string>
+     <string name="sync_cursor_on_finger_tap">Сначала синхронизировать курсор мыши при тапе пальцем</string>
++    <string name="finger_long_press_rmb">Длинный тап пальцем = ПКМ</string>
++    <string name="stretch_fullscreen">Полный экран: растягивать игру на весь дисплей (без сохранения пропорций)</string>
+ </resources>
+\ No newline at end of file
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 5dea543..e89ba5c 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -372,4 +372,6 @@
+     <string name="stylus_drag_scroll_keys">Scroll map (arrow keys)</string>
+     <string name="stylus_drag_scroll_keys_inverted">Scroll map, inverted</string>
+     <string name="sync_cursor_on_finger_tap">Move the mouse cursor to the finger before a tap click</string>
++    <string name="finger_long_press_rmb">Long finger press = right mouse button</string>
++    <string name="stretch_fullscreen">Fullscreen: stretch the game to the whole display (ignore aspect ratio)</string>
+ </resources>
+\ No newline at end of file
+-- 
+2.43.0
+
