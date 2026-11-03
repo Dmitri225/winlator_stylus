@@ -22,27 +22,39 @@ jobs:
         with:
           lfs: false
 
-      - name: Get imagefs.txz (official APK first, Git LFS as fallback)
+      - name: Get imagefs.txz (official release first, Git LFS as fallback)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          dst=app/src/main/assets/imagefs.txz
+          dst="$GITHUB_WORKSPACE/app/src/main/assets/imagefs.txz"
           mkdir -p /tmp/upstream && cd /tmp/upstream
-          if gh release download "$UPSTREAM_TAG" -R "$UPSTREAM_REPO" -p '*.apk'; then
-            apk=$(ls *.apk | head -1)
-            unzip -o -q "$apk" assets/imagefs.txz
-            got=$(sha256sum assets/imagefs.txz | cut -d' ' -f1)
-            echo "imagefs from APK: $got"
-            if [ "$got" = "$IMAGEFS_SHA256" ]; then
-              cp assets/imagefs.txz "$GITHUB_WORKSPACE/$dst"
-            fi
-          fi
-          cd "$GITHUB_WORKSPACE"
-          if [ "$(head -c 7 $dst)" = "version" ]; then
-            echo "Falling back to Git LFS"
+          echo "== release assets of $UPSTREAM_REPO $UPSTREAM_TAG"
+          gh release view "$UPSTREAM_TAG" -R "$UPSTREAM_REPO" --json assets -q '.assets[]|.name+"  "+(.size|tostring)' || true
+          gh release download "$UPSTREAM_TAG" -R "$UPSTREAM_REPO" || true
+          ls -la
+          found=""
+          check() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$IMAGEFS_SHA256" ] && found="$1"; true; }
+          for f in *; do check "$f"; done
+          for apk in *.apk; do
+            [ -f "$apk" ] || continue
+            echo "== $apk entries matching imagefs/large assets"
+            unzip -l "$apk" | awk '$1 > 1000000 || /imagefs/' || true
+            for e in $(unzip -Z1 "$apk" | grep -i imagefs || true); do
+              unzip -o -q "$apk" "$e" -d x
+              check "x/$e"
+            done
+          done
+          if [ -n "$found" ]; then
+            echo "imagefs found in release: $found"
+            cp "$found" "$dst"
+          else
+            echo "Not in release, falling back to Git LFS of $UPSTREAM_REPO"
+            cd "$GITHUB_WORKSPACE"
             git lfs install --local
-            git lfs pull --include="$dst"
+            git remote add upstream "https://github.com/$UPSTREAM_REPO.git" || true
+            git config lfs.url "https://github.com/$UPSTREAM_REPO.git/info/lfs"
+            git lfs pull --include="app/src/main/assets/imagefs.txz"
           fi
           echo "$IMAGEFS_SHA256  $dst" | sha256sum -c -
           ls -la "$dst"
