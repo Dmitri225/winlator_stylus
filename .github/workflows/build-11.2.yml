@@ -3,6 +3,7 @@ name: Build Winlator 11.2 + S Pen APK
 on:
   push:
     branches: [ spen-11.2 ]
+    paths-ignore: [ 'README.md', 'ci/verify-tag.txt', '.github/workflows/verify-install.yml' ]
   workflow_dispatch:
 
 permissions:
