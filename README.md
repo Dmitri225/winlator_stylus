@@ -15,3 +15,6 @@ Patch contents:
 - Optional "keep the game running in background" (no SIGSTOP of Wine processes)
 - Stylus input injected off the UI thread (no ANR while the game loads)
 - Optional pen drag = map scroll via arrow keys (HoMM3 grab-and-drag)
+- Correct pen/finger mapping in Fullscreen mode
+- Finger tap moves the cursor to the finger before clicking (setting, default on)
+- New containers: WineD3D with GDI renderer by default

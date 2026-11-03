@@ -1,0 +1,249 @@
+From cfb0b0d032cc4b843b3e8f9f70ff971c8076c23d Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Tue, 3 Nov 2026 12:52:17 +0000
+Subject: [PATCH] Fullscreen touch mapping, finger-tap cursor sync, GDI default
+ for new containers
+
+- TouchpadView: in Fullscreen the X screen is stretched over the whole view,
+  so map X/Y with separate scales; recompute the mapping when Fullscreen is
+  toggled from the drawer (no size change happens then). Fixes the pen/finger
+  position not matching the cursor in Fullscreen.
+- New setting (default on): move the cursor to the finger before a tap click.
+- New containers default to WineD3D with renderer=gdi (existing containers
+  keep their settings).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ .../com/winlator/ContainerDetailFragment.java |  4 +-
+ .../java/com/winlator/SettingsFragment.java   |  3 ++
+ .../com/winlator/XServerDisplayActivity.java  |  1 +
+ .../com/winlator/container/Container.java     |  4 ++
+ .../com/winlator/widget/TouchpadView.java     | 38 +++++++++++++++++--
+ app/src/main/res/layout/settings_fragment.xml |  7 ++++
+ app/src/main/res/values-pt/strings.xml        |  1 +
+ app/src/main/res/values-ru/strings.xml        |  1 +
+ app/src/main/res/values/strings.xml           |  1 +
+ 9 files changed, 55 insertions(+), 5 deletions(-)
+
+diff --git a/app/src/main/java/com/winlator/ContainerDetailFragment.java b/app/src/main/java/com/winlator/ContainerDetailFragment.java
+index 8b8cd46..b2bbe31 100644
+--- a/app/src/main/java/com/winlator/ContainerDetailFragment.java
++++ b/app/src/main/java/com/winlator/ContainerDetailFragment.java
+@@ -140,8 +140,8 @@ public class ContainerDetailFragment extends Fragment {
+         String selectedGraphicsDriver = isEditMode() ? container.getGraphicsDriver() : GraphicsDrivers.getDefaultDriver(context);
+         GraphicsDriverPicker graphicsDriverPicker = new GraphicsDriverPicker(view.findViewById(R.id.LLGraphicsDriver), selectedGraphicsDriver, oldGraphicsDriverConfig);
+ 
+-        String oldDXWrapperConfig = isEditMode() ? container.getDXWrapperConfig() : "";
+-        String selectedDXWrapper = isEditMode() ? container.getDXWrapper() : Container.DEFAULT_DXWRAPPER;
++        String oldDXWrapperConfig = isEditMode() ? container.getDXWrapperConfig() : Container.NEW_CONTAINER_DXWRAPPER_CONFIG;
++        String selectedDXWrapper = isEditMode() ? container.getDXWrapper() : Container.NEW_CONTAINER_DXWRAPPER;
+         DXWrapperPicker dxwrapperPicker = new DXWrapperPicker(view.findViewById(R.id.LLDXWrapper), graphicsDriverPicker, selectedDXWrapper, oldDXWrapperConfig);
+ 
+         view.findViewById(R.id.BTHelpDXWrapper).setOnClickListener((v) -> AppUtils.showHelpBox(context, v, R.string.dxwrapper_help_content));
+diff --git a/app/src/main/java/com/winlator/SettingsFragment.java b/app/src/main/java/com/winlator/SettingsFragment.java
+index 9df50a5..7cba103 100644
+--- a/app/src/main/java/com/winlator/SettingsFragment.java
++++ b/app/src/main/java/com/winlator/SettingsFragment.java
+@@ -156,6 +156,8 @@ public class SettingsFragment extends Fragment {
+         sStylusDragMode.setSelection(preferences.getInt("stylus_drag_mode", com.winlator.widget.TouchpadView.STYLUS_DRAG_MODE_LEFT_BUTTON));
+         final CheckBox cbStylusHoverButtonRMB = view.findViewById(R.id.CBStylusHoverButtonRMB);
+         cbStylusHoverButtonRMB.setChecked(preferences.getBoolean("stylus_hover_button_rmb", false));
++        final CheckBox cbSyncCursorOnFingerTap = view.findViewById(R.id.CBSyncCursorOnFingerTap);
++        cbSyncCursorOnFingerTap.setChecked(preferences.getBoolean("sync_cursor_on_finger_tap", true));
+         final CheckBox cbStylusPalmRejection = view.findViewById(R.id.CBStylusPalmRejection);
+         cbStylusPalmRejection.setChecked(preferences.getBoolean("stylus_palm_rejection", true));
+ 
+@@ -264,6 +266,7 @@ public class SettingsFragment extends Fragment {
+             editor.putInt("stylus_drag_mode", sStylusDragMode.getSelectedItemPosition());
+             editor.putBoolean("stylus_hover_button_rmb", cbStylusHoverButtonRMB.isChecked());
+             editor.putBoolean("stylus_palm_rejection", cbStylusPalmRejection.isChecked());
++            editor.putBoolean("sync_cursor_on_finger_tap", cbSyncCursorOnFingerTap.isChecked());
+             editor.putFloat("cursor_speed", sbCursorSpeed.getValue() / 100.0f);
+             editor.putFloat("cursor_scale", sbCursorSize.getValue() / 100.0f);
+             editor.putInt("cursor_color", cpvCursorColor.getColor());
+diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+index 795c551..d0281aa 100644
+--- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
++++ b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+@@ -600,6 +600,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         touchpadView = new TouchpadView(this, xServer, capturePointerOnExternalMouse);
+         touchpadView.setSensitivity(globalCursorSpeed);
+         touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", false));
++        touchpadView.setSyncCursorOnFingerTap(preferences.getBoolean("sync_cursor_on_finger_tap", true));
+         touchpadView.setStylusEnabled(preferences.getBoolean("stylus_absolute_mode", true));
+         touchpadView.setStylusRightButtonMode((byte)preferences.getInt("stylus_rmb_mode", TouchpadView.STYLUS_RMB_MODE_LONG_PRESS));
+         touchpadView.setStylusDragMode((byte)preferences.getInt("stylus_drag_mode", TouchpadView.STYLUS_DRAG_MODE_LEFT_BUTTON));
+diff --git a/app/src/main/java/com/winlator/container/Container.java b/app/src/main/java/com/winlator/container/Container.java
+index 2086786..580db5a 100644
+--- a/app/src/main/java/com/winlator/container/Container.java
++++ b/app/src/main/java/com/winlator/container/Container.java
+@@ -21,6 +21,10 @@ public class Container {
+     public static final String DEFAULT_SCREEN_SIZE = "1280x720";
+     public static final String DEFAULT_AUDIO_DRIVER = AudioDrivers.ALSA;
+     public static final String DEFAULT_DXWRAPPER = DXWrappers.DXVK;
++    // Used only when creating a new container (existing ones keep their settings):
++    // WineD3D with the GDI renderer, which works for 2D DirectDraw games like HoMM3/HotA.
++    public static final String NEW_CONTAINER_DXWRAPPER = DXWrappers.WINED3D;
++    public static final String NEW_CONTAINER_DXWRAPPER_CONFIG = "renderer=gdi|";
+     public static final String DEFAULT_WINCOMPONENTS = "direct3d=1,directsound=1,directmusic=1,directshow=0,directplay=0,xaudio=1,vcrun2005=0,vcrun2010=1,wmdecoder=1";
+     public static final String FALLBACK_WINCOMPONENTS = "direct3d=0,directsound=0,directmusic=0,directshow=0,directplay=0,xaudio=0,vcrun2005=0,vcrun2010=0,wmdecoder=0";
+     public static final String DEFAULT_DRIVES = "D:"+AppUtils.DIRECTORY_DOWNLOADS +"E:"+AppUtils.INTERNAL_STORAGE;
+diff --git a/app/src/main/java/com/winlator/widget/TouchpadView.java b/app/src/main/java/com/winlator/widget/TouchpadView.java
+index e12901f..ac1708d 100644
+--- a/app/src/main/java/com/winlator/widget/TouchpadView.java
++++ b/app/src/main/java/com/winlator/widget/TouchpadView.java
+@@ -40,6 +40,7 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+     private boolean pointerButtonLeftEnabled = true;
+     private boolean pointerButtonRightEnabled = true;
+     private boolean moveCursorToTouchpoint = false;
++    private boolean syncCursorOnFingerTap = true;
+     private Finger fingerPointerButtonLeft;
+     private Finger fingerPointerButtonRight;
+     private float scrollAccumY = 0;
+@@ -129,16 +130,36 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+         updateXform(w, h, xServer.screenInfo.width, xServer.screenInfo.height);
+     }
+ 
++    private boolean xformFullscreen = false;
++    private int xformOuterWidth, xformOuterHeight;
++
+     private void updateXform(int outerWidth, int outerHeight, int innerWidth, int innerHeight) {
+         ViewTransformation viewTransformation = new ViewTransformation();
+         viewTransformation.update(outerWidth, outerHeight, innerWidth, innerHeight);
+ 
++        xformFullscreen = xServer.getRenderer().isFullscreen();
++        xformOuterWidth = outerWidth;
++        xformOuterHeight = outerHeight;
++
+         float invAspect = 1.0f / viewTransformation.aspect;
+-        if (!xServer.getRenderer().isFullscreen()) {
++        if (!xformFullscreen) {
+             XForm.makeTranslation(xform, -viewTransformation.viewOffsetX, -viewTransformation.viewOffsetY);
+             XForm.scale(xform, invAspect, invAspect);
+         }
+-        else XForm.makeScale(xform, invAspect, invAspect);
++        else {
++            // "Fullscreen" stretches the X screen over the whole surface (GLRenderer sets the
++            // viewport to the full view), so X and Y scale independently.
++            XForm.makeScale(xform, (float)innerWidth / outerWidth, (float)innerHeight / outerHeight);
++        }
++    }
++
++    /** Fullscreen is toggled from the drawer menu without a size change: keep the mapping in sync. */
++    private void ensureXform() {
++        int w = getWidth() > 0 ? getWidth() : AppUtils.getScreenWidth();
++        int h = getHeight() > 0 ? getHeight() : AppUtils.getScreenHeight();
++        if (xServer.getRenderer().isFullscreen() != xformFullscreen || w != xformOuterWidth || h != xformOuterHeight) {
++            updateXform(w, h, xServer.screenInfo.width, xServer.screenInfo.height);
++        }
+     }
+ 
+     private class Finger {
+@@ -192,6 +213,7 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+ 
+     @Override
+     public boolean onTouchEvent(MotionEvent event) {
++        ensureXform();
+         int actionIndex = event.getActionIndex();
+         int pointerId = event.getPointerId(actionIndex);
+         int actionMasked = event.getActionMasked();
+@@ -266,7 +288,10 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+         switch (numFingers) {
+             case 1:
+                 if (finger1.isTap()) {
+-                    if (moveCursorToTouchpoint) xServer.injectPointerMove(finger1.x, finger1.y);
++                    // tap = click where the finger is, not where the cursor happened to be
++                    if (moveCursorToTouchpoint || (syncCursorOnFingerTap && !xServer.isRelativeMouseMovement())) {
++                        xServer.injectPointerMove(finger1.x, finger1.y);
++                    }
+                     pressPointerButtonLeft(finger1);
+                 }
+                 break;
+@@ -337,6 +362,7 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+     }
+ 
+     public void mouseMove(float x, float y, int action) {
++        ensureXform();
+         switch (action) {
+             case MotionEvent.ACTION_DOWN:
+                 mouseMoveFinger = new Finger(x, y);
+@@ -421,11 +447,16 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+         return moveCursorToTouchpoint;
+     }
+ 
++    public void setSyncCursorOnFingerTap(boolean syncCursorOnFingerTap) {
++        this.syncCursorOnFingerTap = syncCursorOnFingerTap;
++    }
++
+     public void setMoveCursorToTouchpoint(boolean moveCursorToTouchpoint) {
+         this.moveCursorToTouchpoint = moveCursorToTouchpoint;
+     }
+ 
+     public boolean onExternalMouseEvent(MotionEvent event) {
++        ensureXform();
+         if (stylusEnabled && isEnabled() && isStylusPointer(event, 0)) return handleStylusGenericEvent(event);
+         boolean handled = false;
+         if (isEnabled() && event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+@@ -472,6 +503,7 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
+     }
+ 
+     public float[] computeDeltaPoint(float lastX, float lastY, float x, float y) {
++        ensureXform();
+         final float[] result = {0, 0};
+ 
+         XForm.transformPoint(xform, lastX, lastY, result);
+diff --git a/app/src/main/res/layout/settings_fragment.xml b/app/src/main/res/layout/settings_fragment.xml
+index 3f70bb8..e9002eb 100644
+--- a/app/src/main/res/layout/settings_fragment.xml
++++ b/app/src/main/res/layout/settings_fragment.xml
+@@ -169,6 +169,13 @@
+                         android:layout_height="wrap_content"
+                         android:text="@string/stylus_palm_rejection"
+                         android:layout_marginTop="8dp" />
++
++                    <CheckBox
++                        android:id="@+id/CBSyncCursorOnFingerTap"
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:text="@string/sync_cursor_on_finger_tap"
++                        android:layout_marginTop="8dp" />
+                 </LinearLayout>
+ 
+                 <TextView
+diff --git a/app/src/main/res/values-pt/strings.xml b/app/src/main/res/values-pt/strings.xml
+index 0bb3c4c..e57477a 100644
+--- a/app/src/main/res/values-pt/strings.xml
++++ b/app/src/main/res/values-pt/strings.xml
+@@ -313,4 +313,5 @@
+     <string name="stylus_drag_left_button">Arrastar com o botão esquerdo</string>
+     <string name="stylus_drag_scroll_keys">Rolar o mapa (setas)</string>
+     <string name="stylus_drag_scroll_keys_inverted">Rolar o mapa, invertido</string>
++    <string name="sync_cursor_on_finger_tap">Mover o cursor para o dedo antes do clique por toque</string>
+ </resources>
+\ No newline at end of file
+diff --git a/app/src/main/res/values-ru/strings.xml b/app/src/main/res/values-ru/strings.xml
+index bc3d2ad..7af2cc7 100644
+--- a/app/src/main/res/values-ru/strings.xml
++++ b/app/src/main/res/values-ru/strings.xml
+@@ -313,4 +313,5 @@
+     <string name="stylus_drag_left_button">Перетаскивание с левой кнопкой</string>
+     <string name="stylus_drag_scroll_keys">Прокрутка карты (стрелки)</string>
+     <string name="stylus_drag_scroll_keys_inverted">Прокрутка карты, инверсия</string>
++    <string name="sync_cursor_on_finger_tap">Сначала синхронизировать курсор мыши при тапе пальцем</string>
+ </resources>
+\ No newline at end of file
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index c9fea06..5dea543 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -371,4 +371,5 @@
+     <string name="stylus_drag_left_button">Left mouse button drag</string>
+     <string name="stylus_drag_scroll_keys">Scroll map (arrow keys)</string>
+     <string name="stylus_drag_scroll_keys_inverted">Scroll map, inverted</string>
++    <string name="sync_cursor_on_finger_tap">Move the mouse cursor to the finger before a tap click</string>
+ </resources>
+\ No newline at end of file
+-- 
+2.43.0
+
