@@ -1,0 +1,456 @@
+From 94cffc24430151ab9911915256bb7284a3c485e8 Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Sun, 8 Nov 2026 07:11:15 +0000
+Subject: [PATCH] Run in Knox Secure Folder / secondary Android users
+ (experimental)
+
+The rootfs, box64, Wine and graphics drivers are built with the absolute
+prefix /data/data/com.winlator/files/rootfs (ELF interpreter, RUNPATH,
+ld.so paths, wineserver dir, X11/Vortek sockets, fontconfig, ALSA).
+/data/data is user 0 only, so in Knox (user 150) box64 cannot even exec.
+
+- RootFSRelocator rewrites that prefix in place (same length) to
+  /proc/self/fd/9//./././././././././. on extraction, plus a one-time pass
+  over an existing rootfs (skips /home and /tmp).
+- Guest programs start via sh with fd 9 open on this user's rootfs dir
+  (exec "$@" 9<dir: keeps the pid and the fd for every child process).
+- Native cache dir from WINLATOR_APP_CACHE_DIR (set from getCacheDir()).
+- E: drive path /data/data/com.winlator/storage mapped to /data/user/<id>.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ .../cpp/vortekrenderer/src/shader_inspector.c |   2 +-
+ .../cpp/vortekrenderer/src/texture_decoder.c  |  26 ++--
+ app/src/main/cpp/winlator/include/winlator.h  |  15 +-
+ app/src/main/cpp/winlator/src/gpu_helper.c    |   6 +-
+ .../main/java/com/winlator/MainActivity.java  |   1 +
+ .../com/winlator/XServerDisplayActivity.java  |   1 +
+ .../main/java/com/winlator/core/AppUtils.java |  21 +++
+ .../java/com/winlator/core/ProcessHelper.java |  24 +++-
+ .../com/winlator/core/TarCompressorUtils.java |   2 +
+ .../java/com/winlator/core/WineUtils.java     |   2 +-
+ .../xenvironment/RootFSRelocator.java         | 135 ++++++++++++++++++
+ .../GuestProgramLauncherComponent.java        |   4 +-
+ 12 files changed, 222 insertions(+), 17 deletions(-)
+ create mode 100644 app/src/main/java/com/winlator/xenvironment/RootFSRelocator.java
+
+diff --git a/app/src/main/cpp/vortekrenderer/src/shader_inspector.c b/app/src/main/cpp/vortekrenderer/src/shader_inspector.c
+index ca69a42..8cfab4f 100644
+--- a/app/src/main/cpp/vortekrenderer/src/shader_inspector.c
++++ b/app/src/main/cpp/vortekrenderer/src/shader_inspector.c
+@@ -15,7 +15,7 @@
+ #define WRITE_FILE(filename, code, sizeInBytes) \
+     do { \
+         char path[PATH_MAX] = {0}; \
+-        sprintf(path, APP_CACHE_DIR "/%s", filename); \
++        snprintf(path, sizeof(path), "%s/%s", appCacheDir(), filename); \
+         FILE* f = fopen(path, "wb"); \
+         fwrite((const char*)code, 1, sizeInBytes, f); \
+         fclose(f); \
+diff --git a/app/src/main/cpp/vortekrenderer/src/texture_decoder.c b/app/src/main/cpp/vortekrenderer/src/texture_decoder.c
+index 2cc614c..79817fc 100644
+--- a/app/src/main/cpp/vortekrenderer/src/texture_decoder.c
++++ b/app/src/main/cpp/vortekrenderer/src/texture_decoder.c
+@@ -8,7 +8,11 @@
+ #include "string_utils.h"
+ #include "file_utils.h"
+ 
+-#define CACHE_DIR APP_CACHE_DIR "/vortek"
++static const char* textureCacheDir() {
++    static char dir[512] = {0};
++    if (!dir[0]) snprintf(dir, sizeof(dir), "%s/vortek", appCacheDir());
++    return dir;
++}
+ #define CACHE_MIN_IMAGE_WIDTH 1024
+ 
+ #define VK_FORMAT_BC_FLAG(f) (1 << (f - VK_FORMAT_BC1_RGB_UNORM_BLOCK))
+@@ -79,19 +83,21 @@ static void internalDestroyImage(VkDevice device, TextureDecoder_Image* targetIm
+ }
+ 
+ static bool readCachedImage(TextureDecoder_Image* image, uint64_t hash, void* result) {
+-    char filename[128] = {0};
+-    sprintf(filename, CACHE_DIR "/%lx-%dx%d-%d.imd", hash, image->width, image->height, image->format);
++    char filename[640] = {0};
++    snprintf(filename, sizeof(filename), "%s/%lx-%dx%d-%d.imd", textureCacheDir(), hash, image->width, image->height, image->format);
+ 
+-    createDirectory(CACHE_DIR);
++    createDirectory((char*)textureCacheDir());
+     size_t size = image->width * image->height * 4;
+     return fileGetContents(filename, result, &size) ? true : false;
+ }
+ 
+ static void writeImageToCache(TextureDecoder* textureDecoder, TextureDecoder_Image* image, uint64_t hash) {
+     if (textureDecoder->imageCacheSize == 0) return;
+-    createDirectory(CACHE_DIR);
++    createDirectory((char*)textureCacheDir());
+ 
+-    char* content = fileGetContents(CACHE_DIR "/.cache-size", NULL, NULL);
++    char sizeFile[640] = {0};
++    snprintf(sizeFile, sizeof(sizeFile), "%s/.cache-size", textureCacheDir());
++    char* content = fileGetContents(sizeFile, NULL, NULL);
+     uint64_t currentCacheSize = 0;
+     if (content) {
+         currentCacheSize = strtoll(content, NULL, 10);
+@@ -101,14 +107,14 @@ static void writeImageToCache(TextureDecoder* textureDecoder, TextureDecoder_Ima
+     uint64_t maxCacheSize = (uint64_t)textureDecoder->imageCacheSize << 20;
+     while (currentCacheSize > maxCacheSize) {
+         FindFileInfo fileInfo = {0};
+-        if (findFirstFile(CACHE_DIR, &fileInfo) && remove(fileInfo.path) == 0) {
++        if (findFirstFile((char*)textureCacheDir(), &fileInfo) && remove(fileInfo.path) == 0) {
+             currentCacheSize -= fileInfo.size;
+         }
+         else return;
+     }
+ 
+-    char filename[128] = {0};
+-    sprintf(filename, CACHE_DIR "/%lx-%dx%d-%d.imd", hash, image->width, image->height, image->format);
++    char filename[640] = {0};
++    snprintf(filename, sizeof(filename), "%s/%lx-%dx%d-%d.imd", textureCacheDir(), hash, image->width, image->height, image->format);
+     size_t size = image->width * image->height * 4;
+ 
+     bool success = false;
+@@ -116,7 +122,7 @@ static void writeImageToCache(TextureDecoder* textureDecoder, TextureDecoder_Ima
+         currentCacheSize += size;
+         char value[32] = {0};
+         sprintf(value, "%ld", currentCacheSize);
+-        success = filePutContents(CACHE_DIR "/.cache-size", value, strlen(value));
++        success = filePutContents(sizeFile, value, strlen(value));
+     }
+ 
+     if (!success) remove(filename);
+diff --git a/app/src/main/cpp/winlator/include/winlator.h b/app/src/main/cpp/winlator/include/winlator.h
+index 2314314..c6c3011 100644
+--- a/app/src/main/cpp/winlator/include/winlator.h
++++ b/app/src/main/cpp/winlator/include/winlator.h
+@@ -11,7 +11,20 @@
+ #define BITMASK_UNSET(bits, flag) bits &= ~flag
+ #define GETEXP(x) (31 - __builtin_clz(x))
+ 
+-#define APP_CACHE_DIR "/data/data/com.winlator/cache"
++#define APP_CACHE_DIR_DEFAULT "/data/data/com.winlator/cache"
++/* kept for debug-only code (gladio debug_utils.h); real code uses appCacheDir() */
++#define APP_CACHE_DIR APP_CACHE_DIR_DEFAULT
++
++#ifndef WINLATOR_APP_CACHE_DIR_FN
++#define WINLATOR_APP_CACHE_DIR_FN
++#include <stdlib.h>
++/* /data/data is user 0 only: in Knox / secondary users the app's cache dir is
++ * /data/user/<id>/com.winlator/cache. Java exports it as WINLATOR_APP_CACHE_DIR. */
++static inline const char* appCacheDir() {
++    const char* dir = getenv("WINLATOR_APP_CACHE_DIR");
++    return dir && dir[0] ? dir : APP_CACHE_DIR_DEFAULT;
++}
++#endif
+ #define LIBVULKAN_PATH "/system/lib64/libvulkan.so"
+ 
+ #define CLOSEFD(x) \
+diff --git a/app/src/main/cpp/winlator/src/gpu_helper.c b/app/src/main/cpp/winlator/src/gpu_helper.c
+index 5ca9083..595d3da 100644
+--- a/app/src/main/cpp/winlator/src/gpu_helper.c
++++ b/app/src/main/cpp/winlator/src/gpu_helper.c
+@@ -64,7 +64,9 @@ done:
+ JNIEXPORT jint JNICALL
+ Java_com_winlator_core_GPUHelper_vkGetApiVersion() {
+     int version = 0;
+-    char* content = fileGetContents(APP_CACHE_DIR "/.vk-api-version", NULL, NULL);
++    char cacheFile[512] = {0};
++    snprintf(cacheFile, sizeof(cacheFile), "%s/.vk-api-version", appCacheDir());
++    char* content = fileGetContents(cacheFile, NULL, NULL);
+     if (content) {
+         version = strtol(content, NULL, 10);
+         MEMFREE(content);
+@@ -116,7 +118,7 @@ Java_com_winlator_core_GPUHelper_vkGetApiVersion() {
+ 
+     char value[32] = {0};
+     sprintf(value, "%d", version);
+-    filePutContents(APP_CACHE_DIR "/.vk-api-version", value, strlen(value));
++    filePutContents(cacheFile, value, strlen(value));
+ 
+ done:
+     if (instance) vkDestroyInstance(instance, NULL);
+diff --git a/app/src/main/java/com/winlator/MainActivity.java b/app/src/main/java/com/winlator/MainActivity.java
+index 611c61f..5395efb 100644
+--- a/app/src/main/java/com/winlator/MainActivity.java
++++ b/app/src/main/java/com/winlator/MainActivity.java
+@@ -51,6 +51,7 @@ public class MainActivity extends AppCompatActivity implements NavigationView.On
+     protected void onCreate(Bundle savedInstanceState) {
+         AppUtils.setActivityTheme(this);
+         super.onCreate(savedInstanceState);
++        com.winlator.core.AppUtils.exportAppCacheDir(this);
+         setContentView(R.layout.main_activity);
+ 
+         drawerLayout = findViewById(R.id.DrawerLayout);
+diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+index a13747e..c2fbdea 100644
+--- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
++++ b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+@@ -141,6 +141,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+     public void onCreate(Bundle savedInstanceState) {
+         AppUtils.setActivityTheme(this);
+         super.onCreate(savedInstanceState);
++        com.winlator.core.AppUtils.exportAppCacheDir(this);
+         AppUtils.hideSystemUI(this);
+         AppUtils.keepScreenOn(this);
+         setContentView(R.layout.xserver_display_activity);
+diff --git a/app/src/main/java/com/winlator/core/AppUtils.java b/app/src/main/java/com/winlator/core/AppUtils.java
+index cac686e..56e7dfd 100644
+--- a/app/src/main/java/com/winlator/core/AppUtils.java
++++ b/app/src/main/java/com/winlator/core/AppUtils.java
+@@ -45,6 +45,27 @@ import java.util.TimerTask;
+ public abstract class AppUtils {
+     public static final String DIRECTORY_DOWNLOADS = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getPath();
+     public static final String INTERNAL_STORAGE = "/data/data/com.winlator/storage";
++
++    /**
++     * /data/data is a link to /data/user/0 and exists for user 0 only. In Knox Secure Folder or
++     * another Android user this app's data lives in /data/user/<id>/com.winlator.
++     */
++    public static String toCurrentUserPath(String path) {
++        final String prefix = "/data/data/com.winlator";
++        int userId = android.os.Process.myUid() / 100000;
++        if (userId == 0 || path == null || !path.startsWith(prefix)) return path;
++        return "/data/user/"+userId+"/com.winlator"+path.substring(prefix.length());
++    }
++
++    /** Lets native code (libwinlator, vortek) find this user's cache dir instead of /data/data/... */
++    public static void exportAppCacheDir(Context context) {
++        try {
++            android.system.Os.setenv("WINLATOR_APP_CACHE_DIR", context.getCacheDir().getAbsolutePath(), true);
++        }
++        catch (Exception e) {
++            android.util.Log.w("AppUtils", "Unable to export WINLATOR_APP_CACHE_DIR", e);
++        }
++    }
+     private static WeakReference<Toast> globalToastReference = null;
+ 
+     public static class RestartApplicationOptions {
+diff --git a/app/src/main/java/com/winlator/core/ProcessHelper.java b/app/src/main/java/com/winlator/core/ProcessHelper.java
+index 4651b83..0215146 100644
+--- a/app/src/main/java/com/winlator/core/ProcessHelper.java
++++ b/app/src/main/java/com/winlator/core/ProcessHelper.java
+@@ -68,9 +68,31 @@ public abstract class ProcessHelper {
+     }
+ 
+     public static int exec(String command, EnvVars envVars, File workingDir, Callback<Integer> terminationCallback) {
++        return exec(splitCommand(command), envVars, workingDir, terminationCallback);
++    }
++
++    /**
++     * Runs a rootfs program with file descriptor 9 open on this user's rootfs directory, which the
++     * relocated rootfs uses instead of the hardcoded /data/data/... prefix (see RootFSRelocator).
++     * ProcessBuilder closes every inherited fd, so the fd is opened by sh, attached to the exec'd
++     * command itself (mksh would make "exec 9<dir" close-on-exec); exec keeps the same pid.
++     */
++    public static int execWithRootFS(String command, EnvVars envVars, File workingDir, File rootDir, Callback<Integer> terminationCallback) {
++        String[] args = splitCommand(command);
++        String[] wrapped = new String[args.length + 4];
++        wrapped[0] = "/system/bin/sh";
++        wrapped[1] = "-c";
++        wrapped[2] = com.winlator.xenvironment.RootFSRelocator.LAUNCH_SNIPPET;
++        wrapped[3] = "sh";
++        System.arraycopy(args, 0, wrapped, 4, args.length);
++        envVars.put(com.winlator.xenvironment.RootFSRelocator.ENV_ROOTFS_DIR, rootDir.getAbsolutePath());
++        return exec(wrapped, envVars, workingDir, terminationCallback);
++    }
++
++    private static int exec(String[] args, EnvVars envVars, File workingDir, Callback<Integer> terminationCallback) {
+         int pid = -1;
+         try {
+-            ProcessBuilder processBuilder = (new ProcessBuilder(splitCommand(command))).directory(workingDir);
++            ProcessBuilder processBuilder = (new ProcessBuilder(args)).directory(workingDir);
+             if (debugCallbacks.isEmpty()) processBuilder.redirectOutput(new File("/dev/null")).redirectErrorStream(true);
+ 
+             Map<String, String> environment = processBuilder.environment();
+diff --git a/app/src/main/java/com/winlator/core/TarCompressorUtils.java b/app/src/main/java/com/winlator/core/TarCompressorUtils.java
+index add450f..c4c7748 100644
+--- a/app/src/main/java/com/winlator/core/TarCompressorUtils.java
++++ b/app/src/main/java/com/winlator/core/TarCompressorUtils.java
+@@ -170,6 +170,8 @@ public abstract class TarCompressorUtils {
+                         try (BufferedOutputStream outStream = new BufferedOutputStream(new FileOutputStream(file), StreamUtils.BUFFER_SIZE)) {
+                             if (!StreamUtils.copy(tar, outStream)) return false;
+                         }
++                        // per-user rootfs: rewrite the hardcoded /data/data/... prefix (see RootFSRelocator)
++                        com.winlator.xenvironment.RootFSRelocator.relocateFile(file);
+                     }
+                 }
+ 
+diff --git a/app/src/main/java/com/winlator/core/WineUtils.java b/app/src/main/java/com/winlator/core/WineUtils.java
+index 131d341..6e3357c 100644
+--- a/app/src/main/java/com/winlator/core/WineUtils.java
++++ b/app/src/main/java/com/winlator/core/WineUtils.java
+@@ -42,7 +42,7 @@ public abstract class WineUtils {
+         }
+ 
+         for (Drive drive : container.drivesIterator()) {
+-            File linkTarget = new File(drive.path);
++            File linkTarget = new File(AppUtils.toCurrentUserPath(drive.path));
+             String path = linkTarget.getAbsolutePath();
+             if (!linkTarget.isDirectory() && path.startsWith(AppUtils.INTERNAL_STORAGE)) {
+                 linkTarget.mkdirs();
+diff --git a/app/src/main/java/com/winlator/xenvironment/RootFSRelocator.java b/app/src/main/java/com/winlator/xenvironment/RootFSRelocator.java
+new file mode 100644
+index 0000000..842beba
+--- /dev/null
++++ b/app/src/main/java/com/winlator/xenvironment/RootFSRelocator.java
+@@ -0,0 +1,135 @@
++package com.winlator.xenvironment;
++
++import android.util.Log;
++
++import java.io.BufferedInputStream;
++import java.io.File;
++import java.io.FileInputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.RandomAccessFile;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.util.ArrayList;
++import java.util.List;
++
++/**
++ * Makes the rootfs independent of the Android user it is installed for (Knox Secure Folder,
++ * work profile, any secondary user).
++ *
++ * The bundled glibc userland, box64, Wine and graphics drivers are built with the absolute prefix
++ * /data/data/com.winlator/files/rootfs: ELF interpreter (PT_INTERP), RUNPATH, ld.so search paths,
++ * Wine's server dir, X11/Vortek socket paths, fontconfig, ALSA... /data/data is a link to
++ * /data/user/0, so for any other user (Knox = user 150) every one of these points into another
++ * user's private storage and box64 cannot even be executed.
++ *
++ * The prefix is rewritten in place to a path of exactly the same length that resolves through
++ * file descriptor 9, which the guest launcher opens on the real rootfs directory of the current
++ * user and which every guest process inherits:
++ *
++ *   /data/data/com.winlator/files/rootfs  ->  /proc/self/fd/9//./././././././././.
++ *
++ * Same length keeps binaries valid (no offsets move). Works for user 0 as well.
++ */
++public abstract class RootFSRelocator {
++    private static final String TAG = "RootFSRelocator";
++    public static final int ROOTFS_FD = 9;
++    public static final String ENV_ROOTFS_DIR = "WINLATOR_ROOTFS_DIR";
++    private static final byte[] OLD_PREFIX = "/data/data/com.winlator/files/rootfs".getBytes(StandardCharsets.US_ASCII);
++    private static final byte[] NEW_PREFIX = "/proc/self/fd/9//./././././././././.".getBytes(StandardCharsets.US_ASCII);
++    private static final int VERSION = 1;
++    private static final int BUFFER_SIZE = 1 << 20;
++
++    static {
++        if (OLD_PREFIX.length != NEW_PREFIX.length) throw new AssertionError("relocation prefixes must have the same length");
++    }
++
++    /** Shell snippet run as: sh -c SNIPPET sh <program> <args...>; keeps the pid (exec) and passes fd 9 on. */
++    public static final String LAUNCH_SNIPPET = "exec \"$@\" "+ROOTFS_FD+"<\"$"+ENV_ROOTFS_DIR+"\"";
++
++    /** Rewrites the prefix inside one regular file. Returns false only if the file could not be patched. */
++    public static boolean relocateFile(File file) {
++        try {
++            if (!file.isFile() || Files.isSymbolicLink(file.toPath()) || file.length() < OLD_PREFIX.length) return true;
++            List<Long> offsets = findOffsets(file);
++            if (offsets.isEmpty()) return true;
++            try (RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
++                for (long offset : offsets) {
++                    raf.seek(offset);
++                    raf.write(NEW_PREFIX);
++                }
++            }
++            return true;
++        }
++        catch (IOException | SecurityException e) {
++            Log.w(TAG, "Unable to relocate "+file, e);
++            return false;
++        }
++    }
++
++    private static List<Long> findOffsets(File file) throws IOException {
++        ArrayList<Long> offsets = new ArrayList<>();
++        final int len = OLD_PREFIX.length;
++        byte[] buffer = new byte[BUFFER_SIZE + len];
++        int carry = 0;
++        long base = 0;
++        try (InputStream in = new BufferedInputStream(new FileInputStream(file), BUFFER_SIZE)) {
++            int read;
++            while ((read = in.read(buffer, carry, buffer.length - carry)) > 0) {
++                int total = carry + read;
++                int limit = total - len;
++                for (int i = 0; i <= limit; i++) {
++                    if (buffer[i] == '/' && matchesAt(buffer, i)) offsets.add(base + i);
++                }
++                int keep = Math.min(len - 1, total);
++                System.arraycopy(buffer, total - keep, buffer, 0, keep);
++                base += total - keep;
++                carry = keep;
++            }
++        }
++        return offsets;
++    }
++
++    private static boolean matchesAt(byte[] buffer, int start) {
++        for (int j = 1; j < OLD_PREFIX.length; j++) if (buffer[start + j] != OLD_PREFIX[j]) return false;
++        return true;
++    }
++
++    /**
++     * One-time pass over an existing rootfs (installed by a build without relocation).
++     * Skips symlinks, /home (containers with their drive_c and games) and /tmp.
++     */
++    public static void relocateRootFSOnce(RootFS rootFS) {
++        File rootDir = rootFS.getRootDir();
++        File marker = new File(rootDir, ".winlator/.relocated");
++        if (marker.isFile()) return;
++
++        long started = System.currentTimeMillis();
++        boolean ok = relocateTree(rootDir, rootDir);
++        if (ok) {
++            try {
++                marker.getParentFile().mkdirs();
++                java.nio.file.Files.write(marker.toPath(), String.valueOf(VERSION).getBytes(StandardCharsets.US_ASCII));
++            }
++            catch (IOException e) {
++                Log.w(TAG, "Unable to write relocation marker", e);
++            }
++        }
++        Log.i(TAG, "rootfs relocation pass: "+(ok ? "done" : "incomplete")+" in "+(System.currentTimeMillis() - started)+" ms");
++    }
++
++    private static boolean relocateTree(File dir, File rootDir) {
++        File[] files = dir.listFiles();
++        if (files == null) return true;
++        boolean ok = true;
++        for (File file : files) {
++            if (Files.isSymbolicLink(file.toPath())) continue;
++            if (file.isDirectory()) {
++                if (dir.equals(rootDir) && (file.getName().equals("home") || file.getName().equals("tmp"))) continue;
++                ok &= relocateTree(file, rootDir);
++            }
++            else ok &= relocateFile(file);
++        }
++        return ok;
++    }
++}
+diff --git a/app/src/main/java/com/winlator/xenvironment/components/GuestProgramLauncherComponent.java b/app/src/main/java/com/winlator/xenvironment/components/GuestProgramLauncherComponent.java
+index 84c4702..86c04af 100644
+--- a/app/src/main/java/com/winlator/xenvironment/components/GuestProgramLauncherComponent.java
++++ b/app/src/main/java/com/winlator/xenvironment/components/GuestProgramLauncherComponent.java
+@@ -37,6 +37,8 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
+             stop();
+             extractBox64File();
+             copyDefaultBox64RCFile();
++            // rootfs installed by an older build still has the hardcoded user-0 prefix
++            com.winlator.xenvironment.RootFSRelocator.relocateRootFSOnce(environment.getRootFS());
+             pid = execGuestProgram();
+         }
+     }
+@@ -107,7 +109,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
+ 
+         String command = rootDir+"/usr/local/bin/box64 "+guestExecutable;
+ 
+-        return ProcessHelper.exec(command, envVars, rootDir, (status) -> {
++        return ProcessHelper.execWithRootFS(command, envVars, rootDir, rootDir, (status) -> {
+             synchronized (lock) {
+                 pid = -1;
+             }
+-- 
+2.43.0
+

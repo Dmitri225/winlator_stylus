@@ -2,7 +2,7 @@ name: Verify APK install (Android 15 emulator)
 
 on:
   push:
-    branches: [ spen-11.2 ]
+    branches: [ knox-support ]
     paths: [ '.github/workflows/verify-install.yml', 'ci/verify-tag.txt' ]
   workflow_dispatch:
 

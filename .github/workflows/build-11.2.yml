@@ -1,8 +1,8 @@
-name: Build Winlator 11.2 + S Pen APK
+name: Build Winlator 11.2 + S Pen + Knox APK (experimental)
 
 on:
   push:
-    branches: [ spen-11.2 ]
+    branches: [ knox-support ]
     paths-ignore: [ 'README.md', 'ci/verify-tag.txt', '.github/workflows/verify-install.yml' ]
   workflow_dispatch:
 
@@ -61,7 +61,7 @@ jobs:
       - name: Collect APK
         run: |
           mkdir -p out
-          cp src/app/build/outputs/apk/debug/*.apk "out/Winlator_11.2_SPen_${GITHUB_RUN_NUMBER}.apk"
+          cp src/app/build/outputs/apk/debug/*.apk "out/Winlator_11.2_SPen_Knox_${GITHUB_RUN_NUMBER}.apk"
           ls -la out
           sha256sum out/*.apk | tee out/SHA256SUMS.txt
 
@@ -101,7 +101,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="spen-11.2-build-${GITHUB_RUN_NUMBER}"
+          tag="knox-build-${GITHUB_RUN_NUMBER}"
           {
             echo "Winlator 11.2 (brunodev85/winlator-app @ ${APP_COMMIT:0:7}) + S Pen patch, built from ${GITHUB_SHA:0:7}."
             echo
@@ -114,4 +114,4 @@ jobs:
             sed -n '/## Native libraries/,$p' out/APK_COMPARISON.md
           } > notes.md
           gh release create "$tag" out/*.apk out/APK_COMPARISON.md out/SHA256SUMS.txt -R "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" --title "Winlator 11.2 + S Pen (build ${GITHUB_RUN_NUMBER})" --notes-file notes.md
+            --target "$GITHUB_SHA" --title "Winlator 11.2 + S Pen + Knox, experimental (build ${GITHUB_RUN_NUMBER})" --prerelease --notes-file notes.md
