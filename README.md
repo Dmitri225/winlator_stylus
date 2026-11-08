@@ -4,6 +4,8 @@
 
 **Последняя сборка:** [Winlator_11.2_SPen_9.apk](https://github.com/Dmitri225/winlator_stylus/releases/download/spen-11.2-build-9/Winlator_11.2_SPen_9.apk) (157 МБ). Все сборки — в [Releases](https://github.com/Dmitri225/winlator_stylus/releases) с тегами `spen-11.2-build-N`.
 
+> **Ветка `knox-support` — экспериментальная.** Сборки `knox-build-N` (pre-release) содержат всё из `spen-11.2` плюс патч `0009`: запуск в Защищённой папке Knox и других профилях Android. Образ Linux собран с зашитым путём `/data/data/com.winlator/files/rootfs`, доступным только основному профилю; патч переписывает его на путь той же длины `/proc/self/fd/9//./././././././././.`, а гостевые процессы запускаются с дескриптором 9, открытым на папку rootfs текущего профиля.
+
 ## Как устроена ветка
 
 - GitHub Actions берёт исходники [brunodev85/winlator-app](https://github.com/brunodev85/winlator-app) @ `a030f55` — коммит, на который официальный [brunodev85/winlator](https://github.com/brunodev85/winlator) ссылается как на релиз 11.2.
