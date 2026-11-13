@@ -5,6 +5,7 @@
 #   T3  the kernel loads an ELF whose PT_INTERP goes through /proc/self/fd/9 (shell domain)
 #   T4  the same inside the app sandbox (run-as com.winlator), user 0
 #   T5  the same for a secondary Android user (/data/user/N, like Knox Secure Folder)
+#   T6  variable values are never evaluated by the shell
 # Results are printed; nothing here fails the job.
 set -u
 D=/data/local/tmp/kt
@@ -22,7 +23,7 @@ PY
 
 # must stay identical to RootFSRelocator.LAUNCH_SNIPPET
 cat > "$W/snippet" <<'SN'
-r="$1"; shift; while [ "$1" != "--" ]; do export "$1"; shift; done; shift; exec "$@" 9<"$r"
+r="$1"; shift; exec /system/bin/env "$@" 9<"$r"
 SN
 
 cat > "$W/outer.sh" <<'SH'
@@ -35,22 +36,26 @@ chmod 755 $D/toybox
 echo "== T1 (build-10 bug) sh with LD_LIBRARY_PATH -> dir whose libc.so is a linker script"
 LD_LIBRARY_PATH=$D/fakelib /system/bin/sh -c 'echo T1_SH_STARTED'; echo "T1 exit code: $?"
 echo "== T2 snippet: env from args + fd 9"
-/system/bin/sh -c "$S" sh $D/root "FOO=a b" "BAR=x=y;z" -- /system/bin/sh -c 'echo "T2 FOO=[$FOO] BAR=[$BAR]"; ls -l /proc/self/fd/9'
+/system/bin/sh -c "$S" sh $D/root "FOO=a b" "BAR=x=y;z" /system/bin/sh -c 'echo "T2 FOO=[$FOO] BAR=[$BAR]"; ls -l /proc/self/fd/9'
 echo "== T3 PT_INTERP through /proc/self/fd/9 (shell domain)"
-/system/bin/sh -c "$S" sh $D/root "LD_LIBRARY_PATH=/system/lib64" -- $D/toybox echo T3_INTERP_VIA_FD_OK; echo "T3 exit code: $?"
+/system/bin/sh -c "$S" sh $D/root "LD_LIBRARY_PATH=/system/lib64" $D/toybox echo T3_INTERP_VIA_FD_OK; echo "T3 exit code: $?"
+echo "== T6 no shell evaluation of values (review finding F5)"
+rm -f $D/pwned
+/system/bin/sh -c "$S" sh $D/root 'RANDOM=a[$(touch /data/local/tmp/kt/pwned)]' 'PPID=5' /system/bin/sh -c 'echo "T6 started, RANDOM passed as text: $(env | grep -c "^RANDOM=a")"'
+[ -e $D/pwned ] && echo "T6 FAIL: value was executed" || echo "T6 OK: value was not executed"
 echo "== T3n negative: same binary without fd 9"
 $D/toybox echo SHOULD_NOT_PRINT; echo "T3n exit code: $? (non-zero expected)"
 SH
 
 cat > "$W/inner.sh" <<'SH'
 S="$(cat /data/local/tmp/kt/snippet 2>/dev/null)"
-[ -n "$S" ] || S='r="$1"; shift; while [ "$1" != "--" ]; do export "$1"; shift; done; shift; exec "$@" 9<"$r"'
+[ -n "$S" ] || S='r="$1"; shift; exec /system/bin/env "$@" 9<"$r"'
 echo "app data dir: $PWD  uid: $(id -u)  context: $(cat /proc/self/attr/current 2>/dev/null)"
 R=$PWD/files/kt/root
 mkdir -p $R && ln -sf /system/bin/linker64 $R/lk64
 chmod 700 $PWD/files/kt/toybox
-/system/bin/sh -c "$S" sh $R "FOO=1" -- $PWD/files/kt/toybox echo APP_INTERP_VIA_FD_OK; echo "exit code: $?"
-/system/bin/sh -c "$S" sh $R -- $PWD/files/kt/toybox ls -ld /proc/self/fd/9/
+/system/bin/sh -c "$S" sh $R "FOO=1" $PWD/files/kt/toybox echo APP_INTERP_VIA_FD_OK; echo "exit code: $?"
+/system/bin/sh -c "$S" sh $R $PWD/files/kt/toybox ls -ld /proc/self/fd/9/
 SH
 
 adb shell "rm -rf $D; mkdir -p $D"

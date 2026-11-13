@@ -1,0 +1,73 @@
+From 436a412730fb2975a6cb1a9acec17f362ca04f4a Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Fri, 13 Nov 2026 10:03:55 +0000
+Subject: [PATCH] Knox launch: set guest environment with env(1), not shell
+ export
+
+Independent review finding F5: mksh evaluates values assigned to its
+integer variables (RANDOM, SECONDS...) as arithmetic, so a guest variable
+value like a[$(cmd)] would run cmd. sh now only opens fd 9 and execs
+/system/bin/env with the NAME=value arguments.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ app/src/main/java/com/winlator/core/ProcessHelper.java |  9 +++++----
+ .../com/winlator/xenvironment/RootFSRelocator.java     | 10 ++++++----
+ 2 files changed, 11 insertions(+), 8 deletions(-)
+
+diff --git a/app/src/main/java/com/winlator/core/ProcessHelper.java b/app/src/main/java/com/winlator/core/ProcessHelper.java
+index ac35363..674c04a 100644
+--- a/app/src/main/java/com/winlator/core/ProcessHelper.java
++++ b/app/src/main/java/com/winlator/core/ProcessHelper.java
+@@ -79,8 +79,8 @@ public abstract class ProcessHelper {
+      *
+      * The guest environment must NOT be the environment of sh: it has LD_LIBRARY_PATH pointing at
+      * the glibc rootfs (where libc.so is a linker script), which makes the bionic sh fail to link.
+-     * So sh starts with the app's own environment and exports the guest variables, passed as
+-     * NAME=value arguments, right before exec.
++     * So sh and env start with the app's own environment; the guest variables are passed as
++     * NAME=value arguments to /system/bin/env, which sets them and execs the program.
+      */
+     public static int execWithRootFS(String command, EnvVars envVars, File workingDir, File rootDir, Callback<Integer> terminationCallback) {
+         String[] args = splitCommand(command);
+@@ -91,11 +91,12 @@ public abstract class ProcessHelper {
+         wrapped.add("sh");
+         wrapped.add(rootDir.getAbsolutePath());
+         for (String name : envVars) {
+-            // sh aborts on "export" of a name that is not a shell identifier
++            // env(1) takes leading NAME=value arguments as variables; keep names plain identifiers
+             if (name.matches("[A-Za-z_][A-Za-z0-9_]*")) wrapped.add(name+"="+envVars.get(name));
+             else android.util.Log.w("ProcessHelper", "Skipping environment variable with unsupported name: "+name);
+         }
+-        wrapped.add("--");
++        // the program path must not look like NAME=value to env
++        if (args.length == 0 || args[0].indexOf('=') != -1) return -1;
+         for (String arg : args) wrapped.add(arg);
+         return exec(wrapped.toArray(new String[0]), new EnvVars(), workingDir, terminationCallback);
+     }
+diff --git a/app/src/main/java/com/winlator/xenvironment/RootFSRelocator.java b/app/src/main/java/com/winlator/xenvironment/RootFSRelocator.java
+index 63c887a..2fd7a9a 100644
+--- a/app/src/main/java/com/winlator/xenvironment/RootFSRelocator.java
++++ b/app/src/main/java/com/winlator/xenvironment/RootFSRelocator.java
+@@ -44,11 +44,13 @@ public abstract class RootFSRelocator {
+     }
+ 
+     /**
+-     * Shell snippet run as: sh -c SNIPPET sh <rootfs dir> NAME=value... -- <program> <args...>
+-     * Exports the guest environment, then execs the program (same pid) with fd 9 on the rootfs dir.
++     * Shell snippet run as: sh -c SNIPPET sh <rootfs dir> NAME=value... <program> <args...>
++     * sh only opens fd 9 on the rootfs dir and execs /system/bin/env, which sets the guest
++     * environment and execs the program (same pid). The variables are never assigned by the
++     * shell itself: mksh evaluates values of its integer variables (RANDOM, SECONDS...) as
++     * arithmetic, which would run $(...) from a value.
+      */
+-    public static final String LAUNCH_SNIPPET =
+-        "r=\"$1\"; shift; while [ \"$1\" != \"--\" ]; do export \"$1\"; shift; done; shift; exec \"$@\" "+ROOTFS_FD+"<\"$r\"";
++    public static final String LAUNCH_SNIPPET = "r=\"$1\"; shift; exec /system/bin/env \"$@\" "+ROOTFS_FD+"<\"$r\"";
+ 
+     /** Rewrites the prefix inside one regular file. Returns false only if the file could not be patched. */
+     public static boolean relocateFile(File file) {
+-- 
+2.43.0
+
