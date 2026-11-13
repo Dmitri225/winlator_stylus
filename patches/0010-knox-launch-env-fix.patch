@@ -1,0 +1,137 @@
+From 71bb6a4d3d8f2e3ba28928209705008c1cdb5dd3 Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Fri, 13 Nov 2026 09:39:37 +0000
+Subject: [PATCH] Knox: fix guest launch (sh must not get the glibc
+ environment)
+
+Build 10 started /system/bin/sh with the guest environment, whose
+LD_LIBRARY_PATH points at the glibc rootfs (libc.so there is a linker
+script), so the bionic shell failed to link and nothing started - in every
+profile. sh now runs with the app's environment and exports the guest
+variables (passed as NAME=value arguments) right before exec.
+
+Also: log exec failures instead of swallowing them, create the E: drive
+directory in secondary users, map absolute symlink targets from archives
+to the current user.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ .../java/com/winlator/core/ProcessHelper.java | 35 +++++++++++++------
+ .../com/winlator/core/TarCompressorUtils.java |  2 +-
+ .../java/com/winlator/core/WineUtils.java     |  2 +-
+ .../xenvironment/RootFSRelocator.java         |  9 +++--
+ 4 files changed, 32 insertions(+), 16 deletions(-)
+
+diff --git a/app/src/main/java/com/winlator/core/ProcessHelper.java b/app/src/main/java/com/winlator/core/ProcessHelper.java
+index 0215146..ac35363 100644
+--- a/app/src/main/java/com/winlator/core/ProcessHelper.java
++++ b/app/src/main/java/com/winlator/core/ProcessHelper.java
+@@ -74,19 +74,30 @@ public abstract class ProcessHelper {
+     /**
+      * Runs a rootfs program with file descriptor 9 open on this user's rootfs directory, which the
+      * relocated rootfs uses instead of the hardcoded /data/data/... prefix (see RootFSRelocator).
+-     * ProcessBuilder closes every inherited fd, so the fd is opened by sh, attached to the exec'd
+-     * command itself (mksh would make "exec 9<dir" close-on-exec); exec keeps the same pid.
++     * ProcessBuilder closes every inherited fd, so the fd is opened by /system/bin/sh, attached to
++     * the exec'd command itself (mksh would make "exec 9<dir" close-on-exec); exec keeps the pid.
++     *
++     * The guest environment must NOT be the environment of sh: it has LD_LIBRARY_PATH pointing at
++     * the glibc rootfs (where libc.so is a linker script), which makes the bionic sh fail to link.
++     * So sh starts with the app's own environment and exports the guest variables, passed as
++     * NAME=value arguments, right before exec.
+      */
+     public static int execWithRootFS(String command, EnvVars envVars, File workingDir, File rootDir, Callback<Integer> terminationCallback) {
+         String[] args = splitCommand(command);
+-        String[] wrapped = new String[args.length + 4];
+-        wrapped[0] = "/system/bin/sh";
+-        wrapped[1] = "-c";
+-        wrapped[2] = com.winlator.xenvironment.RootFSRelocator.LAUNCH_SNIPPET;
+-        wrapped[3] = "sh";
+-        System.arraycopy(args, 0, wrapped, 4, args.length);
+-        envVars.put(com.winlator.xenvironment.RootFSRelocator.ENV_ROOTFS_DIR, rootDir.getAbsolutePath());
+-        return exec(wrapped, envVars, workingDir, terminationCallback);
++        ArrayList<String> wrapped = new ArrayList<>();
++        wrapped.add("/system/bin/sh");
++        wrapped.add("-c");
++        wrapped.add(com.winlator.xenvironment.RootFSRelocator.LAUNCH_SNIPPET);
++        wrapped.add("sh");
++        wrapped.add(rootDir.getAbsolutePath());
++        for (String name : envVars) {
++            // sh aborts on "export" of a name that is not a shell identifier
++            if (name.matches("[A-Za-z_][A-Za-z0-9_]*")) wrapped.add(name+"="+envVars.get(name));
++            else android.util.Log.w("ProcessHelper", "Skipping environment variable with unsupported name: "+name);
++        }
++        wrapped.add("--");
++        for (String arg : args) wrapped.add(arg);
++        return exec(wrapped.toArray(new String[0]), new EnvVars(), workingDir, terminationCallback);
+     }
+ 
+     private static int exec(String[] args, EnvVars envVars, File workingDir, Callback<Integer> terminationCallback) {
+@@ -111,7 +122,9 @@ public abstract class ProcessHelper {
+ 
+             if (terminationCallback != null) createWaitForThread(process, terminationCallback);
+         }
+-        catch (Exception e) {}
++        catch (Exception e) {
++            android.util.Log.e("ProcessHelper", "Unable to start "+java.util.Arrays.toString(args), e);
++        }
+         return pid;
+     }
+ 
+diff --git a/app/src/main/java/com/winlator/core/TarCompressorUtils.java b/app/src/main/java/com/winlator/core/TarCompressorUtils.java
+index c4c7748..302e904 100644
+--- a/app/src/main/java/com/winlator/core/TarCompressorUtils.java
++++ b/app/src/main/java/com/winlator/core/TarCompressorUtils.java
+@@ -164,7 +164,7 @@ public abstract class TarCompressorUtils {
+                 }
+                 else {
+                     if (entry.isSymbolicLink()) {
+-                        FileUtils.symlink(entry.getLinkName(), file.getAbsolutePath());
++                        FileUtils.symlink(AppUtils.toCurrentUserPath(entry.getLinkName()), file.getAbsolutePath());
+                     }
+                     else {
+                         try (BufferedOutputStream outStream = new BufferedOutputStream(new FileOutputStream(file), StreamUtils.BUFFER_SIZE)) {
+diff --git a/app/src/main/java/com/winlator/core/WineUtils.java b/app/src/main/java/com/winlator/core/WineUtils.java
+index 6e3357c..79e094e 100644
+--- a/app/src/main/java/com/winlator/core/WineUtils.java
++++ b/app/src/main/java/com/winlator/core/WineUtils.java
+@@ -44,7 +44,7 @@ public abstract class WineUtils {
+         for (Drive drive : container.drivesIterator()) {
+             File linkTarget = new File(AppUtils.toCurrentUserPath(drive.path));
+             String path = linkTarget.getAbsolutePath();
+-            if (!linkTarget.isDirectory() && path.startsWith(AppUtils.INTERNAL_STORAGE)) {
++            if (!linkTarget.isDirectory() && drive.path.startsWith(AppUtils.INTERNAL_STORAGE)) {
+                 linkTarget.mkdirs();
+                 FileUtils.chmod(linkTarget, 0771);
+             }
+diff --git a/app/src/main/java/com/winlator/xenvironment/RootFSRelocator.java b/app/src/main/java/com/winlator/xenvironment/RootFSRelocator.java
+index 842beba..63c887a 100644
+--- a/app/src/main/java/com/winlator/xenvironment/RootFSRelocator.java
++++ b/app/src/main/java/com/winlator/xenvironment/RootFSRelocator.java
+@@ -34,7 +34,6 @@ import java.util.List;
+ public abstract class RootFSRelocator {
+     private static final String TAG = "RootFSRelocator";
+     public static final int ROOTFS_FD = 9;
+-    public static final String ENV_ROOTFS_DIR = "WINLATOR_ROOTFS_DIR";
+     private static final byte[] OLD_PREFIX = "/data/data/com.winlator/files/rootfs".getBytes(StandardCharsets.US_ASCII);
+     private static final byte[] NEW_PREFIX = "/proc/self/fd/9//./././././././././.".getBytes(StandardCharsets.US_ASCII);
+     private static final int VERSION = 1;
+@@ -44,8 +43,12 @@ public abstract class RootFSRelocator {
+         if (OLD_PREFIX.length != NEW_PREFIX.length) throw new AssertionError("relocation prefixes must have the same length");
+     }
+ 
+-    /** Shell snippet run as: sh -c SNIPPET sh <program> <args...>; keeps the pid (exec) and passes fd 9 on. */
+-    public static final String LAUNCH_SNIPPET = "exec \"$@\" "+ROOTFS_FD+"<\"$"+ENV_ROOTFS_DIR+"\"";
++    /**
++     * Shell snippet run as: sh -c SNIPPET sh <rootfs dir> NAME=value... -- <program> <args...>
++     * Exports the guest environment, then execs the program (same pid) with fd 9 on the rootfs dir.
++     */
++    public static final String LAUNCH_SNIPPET =
++        "r=\"$1\"; shift; while [ \"$1\" != \"--\" ]; do export \"$1\"; shift; done; shift; exec \"$@\" "+ROOTFS_FD+"<\"$r\"";
+ 
+     /** Rewrites the prefix inside one regular file. Returns false only if the file could not be patched. */
+     public static boolean relocateFile(File file) {
+-- 
+2.43.0
+

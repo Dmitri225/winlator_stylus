@@ -3,7 +3,7 @@ name: Build Winlator 11.2 + S Pen + Knox APK (experimental)
 on:
   push:
     branches: [ knox-support ]
-    paths-ignore: [ 'README.md', 'ci/verify-tag.txt', '.github/workflows/verify-install.yml' ]
+    paths-ignore: [ 'README.md', 'ci/verify-tag.txt', '.github/workflows/verify-install.yml', 'ci/knox_mech_test.sh', '.github/workflows/knox-mechanism-test.yml' ]
   workflow_dispatch:
 
 permissions:
