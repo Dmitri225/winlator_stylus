@@ -6,6 +6,9 @@ on:
     paths: [ '.github/workflows/verify-install.yml', 'ci/verify-tag.txt' ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -21,6 +24,15 @@ jobs:
           gh release download "$tag" -R "$GITHUB_REPOSITORY" -p '*.apk' -D apk
           ls -la apk && sha256sum apk/*.apk
           gh release download spen-11.2-build-9 -R "$GITHUB_REPOSITORY" -p '*.apk' -D base
+
+      - name: Attach the independent security review to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(cat ci/verify-tag.txt)
+          for t in "$tag" knox-build-12; do
+            gh release upload "$t" SECURITY_REVIEW.md SECURITY_REVIEW_FOLLOWUP.md -R "$GITHUB_REPOSITORY" --clobber || echo "upload to $t failed"
+          done
 
       - name: Signature and manifest
         run: |
