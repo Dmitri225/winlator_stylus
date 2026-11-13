@@ -20,6 +20,7 @@ jobs:
           tag=$(cat ci/verify-tag.txt)
           gh release download "$tag" -R "$GITHUB_REPOSITORY" -p '*.apk' -D apk
           ls -la apk && sha256sum apk/*.apk
+          gh release download spen-11.2-build-9 -R "$GITHUB_REPOSITORY" -p '*.apk' -D base
 
       - name: Signature and manifest
         run: |
@@ -44,13 +45,14 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: |
-            adb shell getprop ro.build.version.release
-            adb shell getprop ro.product.cpu.abilist
+            adb install -r base/*.apk
             adb install -r apk/*.apk 2>&1 | tee install.log
-            adb shell pm list packages | grep winlator || (echo "NOT INSTALLED"; exit 1)
-            adb shell dumpsys package com.winlator | grep -E "versionName|versionCode|targetSdk|primaryCpuAbi" | head
+            adb shell pm list packages | grep winlator
+            adb shell pm list packages | grep -q com.winlator.knox || (echo "KNOX PACKAGE NOT INSTALLED"; exit 1)
+            adb shell dumpsys package com.winlator.knox | grep -E "versionName|targetSdk|primaryCpuAbi" | head
             adb logcat -c
-            adb shell am start -W -n com.winlator/.MainActivity
-            sleep 20
-            adb shell pidof com.winlator && echo "PROCESS RUNNING" || echo "PROCESS NOT RUNNING"
-            adb logcat -d | grep -E "FATAL EXCEPTION|AndroidRuntime|com.winlator" | head -40 || true
+            adb shell am start -W -n com.winlator.knox/com.winlator.MainActivity
+            sleep 25
+            adb shell pidof com.winlator.knox && echo "PROCESS RUNNING" || echo "PROCESS NOT RUNNING"
+            adb logcat -d | grep -E "FATAL EXCEPTION|AndroidRuntime" -A12 | head -60 || true
+            adb shell run-as com.winlator.knox ls files || true
