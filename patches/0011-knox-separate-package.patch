@@ -1,0 +1,106 @@
+From a78c12acd84ece422d7584153ed48d0a81429a2b Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Fri, 13 Nov 2026 09:42:45 +0000
+Subject: [PATCH] Knox build as a separate package (com.winlator.knox)
+
+Installs next to the regular com.winlator build. Possible because the
+rootfs no longer depends on /data/data/com.winlator: FileProvider authority
+follows the application id, built-in paths map to the real data dir.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ app/build.gradle                                 |  4 ++--
+ app/src/main/AndroidManifest.xml                 |  4 ++--
+ .../main/java/com/winlator/core/AppUtils.java    | 16 +++++++++++++---
+ .../main/java/com/winlator/core/FileUtils.java   |  2 +-
+ 4 files changed, 18 insertions(+), 8 deletions(-)
+
+diff --git a/app/build.gradle b/app/build.gradle
+index bcde1f8..b4103a5 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -5,11 +5,11 @@ android {
+     compileSdk 35
+ 
+     defaultConfig {
+-        applicationId 'com.winlator'
++        applicationId 'com.winlator.knox'
+         minSdkVersion 26
+         targetSdkVersion 28
+         versionCode 33
+-        versionName "11.2-spen"
++        versionName "11.2-spen-knox"
+     }
+ 
+     signingConfigs {
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index aa29300..5c41bdd 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -23,7 +23,7 @@
+         android:isGame="true"
+         android:extractNativeLibs="true"
+         android:allowAudioPlaybackCapture="true"
+-        android:label="@string/app_name">
++        android:label="Winlator Knox">
+ 
+         <activity android:name="com.winlator.MainActivity"
+             android:theme="@style/AppThemeDark"
+@@ -65,7 +65,7 @@
+ 
+         <provider
+             android:name="androidx.core.content.FileProvider"
+-            android:authorities="com.winlator.FileProvider"
++            android:authorities="${applicationId}.FileProvider"
+             android:exported="false"
+             android:grantUriPermissions="true">
+ 
+diff --git a/app/src/main/java/com/winlator/core/AppUtils.java b/app/src/main/java/com/winlator/core/AppUtils.java
+index 56e7dfd..5a1e1e7 100644
+--- a/app/src/main/java/com/winlator/core/AppUtils.java
++++ b/app/src/main/java/com/winlator/core/AppUtils.java
+@@ -52,14 +52,24 @@ public abstract class AppUtils {
+      */
+     public static String toCurrentUserPath(String path) {
+         final String prefix = "/data/data/com.winlator";
+-        int userId = android.os.Process.myUid() / 100000;
+-        if (userId == 0 || path == null || !path.startsWith(prefix)) return path;
+-        return "/data/user/"+userId+"/com.winlator"+path.substring(prefix.length());
++        if (path == null || !path.startsWith(prefix)) return path;
++        if (path.length() > prefix.length() && path.charAt(prefix.length()) != '/') return path;
++        String dataDir = appDataDir;
++        if (dataDir == null) {
++            int userId = android.os.Process.myUid() / 100000;
++            if (userId == 0) return path;
++            dataDir = "/data/user/"+userId+"/com.winlator";
++        }
++        return dataDir+path.substring(prefix.length());
+     }
+ 
++    /** Real data dir of this install: differs from /data/data/com.winlator per user and per package id. */
++    private static volatile String appDataDir = null;
++
+     /** Lets native code (libwinlator, vortek) find this user's cache dir instead of /data/data/... */
+     public static void exportAppCacheDir(Context context) {
+         try {
++            appDataDir = context.getApplicationInfo().dataDir;
+             android.system.Os.setenv("WINLATOR_APP_CACHE_DIR", context.getCacheDir().getAbsolutePath(), true);
+         }
+         catch (Exception e) {
+diff --git a/app/src/main/java/com/winlator/core/FileUtils.java b/app/src/main/java/com/winlator/core/FileUtils.java
+index b503fc0..8700402 100644
+--- a/app/src/main/java/com/winlator/core/FileUtils.java
++++ b/app/src/main/java/com/winlator/core/FileUtils.java
+@@ -410,7 +410,7 @@ public abstract class FileUtils {
+         Intent intent;
+         if (path.startsWith("file://")) {
+             File file = new File(Uri.decode(path.replace("file://", "")));
+-            intent = new Intent(Intent.ACTION_VIEW, FileProvider.getUriForFile(activity, "com.winlator.FileProvider", file));
++            intent = new Intent(Intent.ACTION_VIEW, FileProvider.getUriForFile(activity, activity.getPackageName()+".FileProvider", file));
+             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+         }
+         else intent = new Intent(Intent.ACTION_VIEW, Uri.parse(path));
+-- 
+2.43.0
+

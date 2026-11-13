@@ -105,7 +105,7 @@ jobs:
           {
             echo "Winlator 11.2 (brunodev85/winlator-app @ ${APP_COMMIT:0:7}) + S Pen patch, built from ${GITHUB_SHA:0:7}."
             echo
-            echo "Package com.winlator: uninstall official Winlator / older S Pen builds first (back up the game folder)."
+            echo "Package com.winlator.knox: installs next to the regular com.winlator build."
             echo
             echo '```'; cat out/SHA256SUMS.txt; echo '```'
             echo
