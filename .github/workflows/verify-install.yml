@@ -62,18 +62,14 @@ jobs:
             adb shell pm list packages | grep winlator
             adb shell pm list packages | grep -q com.winlator.knox || (echo "KNOX PACKAGE NOT INSTALLED"; exit 1)
             adb shell dumpsys package com.winlator.knox | grep -E "versionName|targetSdk|primaryCpuAbi" | head
+            adb shell pm grant com.winlator.knox android.permission.WRITE_EXTERNAL_STORAGE || true
+            adb shell pm grant com.winlator.knox android.permission.READ_EXTERNAL_STORAGE || true
+            adb shell pm grant com.winlator.knox android.permission.POST_NOTIFICATIONS || true
             adb logcat -c
             adb shell am start -W -n com.winlator.knox/com.winlator.MainActivity
             sleep 25
             adb shell pidof com.winlator.knox && echo "PROCESS RUNNING" || echo "PROCESS NOT RUNNING"
             adb logcat -d | grep -E "FATAL EXCEPTION|AndroidRuntime" -A12 | head -60 || true
-            adb shell pm grant com.winlator.knox android.permission.WRITE_EXTERNAL_STORAGE || true
-            adb shell pm grant com.winlator.knox android.permission.READ_EXTERNAL_STORAGE || true
-            adb shell am force-stop com.winlator.knox
-            adb shell am start -W -n com.winlator.knox/com.winlator.MainActivity
-            sleep 15
-            adb shell pidof com.winlator.knox && echo "PROCESS RUNNING 2" || echo "PROCESS NOT RUNNING 2"
-            adb logcat -d | grep -E "FATAL EXCEPTION|AndroidRuntime" -A12 | head -40 || true
             adb shell dumpsys window | grep -E "mCurrentFocus" || true
             echo "=== REPORT BEGIN"; adb shell run-as com.winlator.knox cat files/diagnostics/events.log || true
             adb shell 'cat /sdcard/Download/Winlator_diagnostics_com.winlator.knox.txt' | head -150 || true; echo "=== REPORT END"
