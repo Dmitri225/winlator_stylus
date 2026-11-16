@@ -32,6 +32,15 @@ jobs:
           ref: ${{ env.APP_COMMIT }}
           path: src
 
+      - name: Build name
+        run: |
+          # ci/build-name.txt names the build (e.g. 9.1_diag); otherwise the run number is used
+          id=$(tr -d ' \r\n' < ci-src/ci/build-name.txt 2>/dev/null || true)
+          [ -n "$id" ] || id="$GITHUB_RUN_NUMBER"
+          echo "BUILD_ID=$id" >> "$GITHUB_ENV"
+          echo "APK_NAME=Winlator_11.2_SPen_Knox_$id" >> "$GITHUB_ENV"
+          echo "REL_TAG=knox-build-$id" >> "$GITHUB_ENV"
+
       - name: Apply patches
         working-directory: src
         run: |
@@ -56,12 +65,12 @@ jobs:
         working-directory: src
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleDebug --stacktrace -PapkVersionName="Winlator_11.2_SPen_Knox_${GITHUB_RUN_NUMBER}"
+          ./gradlew :app:assembleDebug --stacktrace -PapkVersionName="$APK_NAME"
 
       - name: Collect APK
         run: |
           mkdir -p out
-          cp src/app/build/outputs/apk/debug/*.apk "out/Winlator_11.2_SPen_Knox_${GITHUB_RUN_NUMBER}.apk"
+          cp src/app/build/outputs/apk/debug/*.apk "out/${APK_NAME}.apk"
           ls -la out
           sha256sum out/*.apk | tee out/SHA256SUMS.txt
 
@@ -101,7 +110,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="knox-build-${GITHUB_RUN_NUMBER}"
+          tag="$REL_TAG"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then tag="${tag}-r${GITHUB_RUN_NUMBER}"; fi
           {
             echo "Winlator 11.2 (brunodev85/winlator-app @ ${APP_COMMIT:0:7}) + S Pen patch, built from ${GITHUB_SHA:0:7}."
             echo
@@ -114,4 +124,4 @@ jobs:
             sed -n '/## Native libraries/,$p' out/APK_COMPARISON.md
           } > notes.md
           gh release create "$tag" out/*.apk out/APK_COMPARISON.md out/SHA256SUMS.txt -R "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" --title "Winlator 11.2 + S Pen + Knox, experimental (build ${GITHUB_RUN_NUMBER})" --prerelease --notes-file notes.md
+            --target "$GITHUB_SHA" --title "Winlator 11.2 + S Pen + Knox, experimental (build ${BUILD_ID})" --prerelease --notes-file notes.md

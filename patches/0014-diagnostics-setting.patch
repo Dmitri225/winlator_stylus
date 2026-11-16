@@ -1,0 +1,121 @@
+From c6e29d223dbd6a8dddbc6b103a678b57a763e2e9 Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Mon, 16 Nov 2026 10:47:41 +0000
+Subject: [PATCH] Diagnostics window as a setting (default on in diagnostic
+ builds)
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ app/src/main/java/com/winlator/SettingsFragment.java | 4 ++++
+ app/src/main/java/com/winlator/core/Diagnostics.java | 6 +++++-
+ app/src/main/res/layout/settings_fragment.xml        | 8 ++++++++
+ app/src/main/res/values-pt/strings.xml               | 2 ++
+ app/src/main/res/values-ru/strings.xml               | 2 ++
+ app/src/main/res/values/strings.xml                  | 2 ++
+ 6 files changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/app/src/main/java/com/winlator/SettingsFragment.java b/app/src/main/java/com/winlator/SettingsFragment.java
+index 689f022..c6e62e9 100644
+--- a/app/src/main/java/com/winlator/SettingsFragment.java
++++ b/app/src/main/java/com/winlator/SettingsFragment.java
+@@ -192,6 +192,9 @@ public class SettingsFragment extends Fragment {
+         final CheckBox cbKeepRunningInBackground = view.findViewById(R.id.CBKeepRunningInBackground);
+         cbKeepRunningInBackground.setChecked(preferences.getBoolean("keep_running_in_background", false));
+ 
++        final CheckBox cbShowDiagnosticsOnStart = view.findViewById(R.id.CBShowDiagnosticsOnStart);
++        cbShowDiagnosticsOnStart.setChecked(preferences.getBoolean("show_diagnostics_on_start", true));
++
+         final CheckBox cbEnableBackgroundProtection = view.findViewById(R.id.CBEnableBackgroundProtection);
+         cbEnableBackgroundProtection.setChecked(preferences.getBoolean("enable_background_protection", true));
+         cbEnableBackgroundProtection.setOnCheckedChangeListener((buttonView, isChecked) -> {
+@@ -297,6 +300,7 @@ public class SettingsFragment extends Fragment {
+             editor.putBoolean("enable_background_protection", cbEnableBackgroundProtection.isChecked());
+             editor.putBoolean("enable_background_wakelock", cbEnableBackgroundWakelock.isChecked());
+             editor.putBoolean("keep_running_in_background", cbKeepRunningInBackground.isChecked());
++            editor.putBoolean("show_diagnostics_on_start", cbShowDiagnosticsOnStart.isChecked());
+             editor.putBoolean("save_mem_on_run_from_steam", cbSaveMemOnRunFromSteam.isChecked());
+             putGamepadPlayerConfigs(view, editor);
+ 
+diff --git a/app/src/main/java/com/winlator/core/Diagnostics.java b/app/src/main/java/com/winlator/core/Diagnostics.java
+index 05871cf..0bf2abd 100644
+--- a/app/src/main/java/com/winlator/core/Diagnostics.java
++++ b/app/src/main/java/com/winlator/core/Diagnostics.java
+@@ -244,6 +244,7 @@ public abstract class Diagnostics {
+         line(sb, "Защита в фоне (enable_background_protection)", () -> prefs.getBoolean("enable_background_protection", true));
+         line(sb, "Не приостанавливать игру в фоне (keep_running_in_background)", () -> prefs.getBoolean("keep_running_in_background", false));
+         line(sb, "Wakelock при блокировке (enable_background_wakelock)", () -> prefs.getBoolean("enable_background_wakelock", false));
++        line(sb, "Показывать окно диагностики при запуске (show_diagnostics_on_start)", () -> prefs.getBoolean("show_diagnostics_on_start", true));
+         line(sb, "Запрос исключения батареи уже показан (battery_optimization_asked)", () -> prefs.getBoolean("battery_optimization_asked", false));
+         line(sb, "Сессия игры сейчас активна (foreground service)", ForegroundService::isSessionActive);
+         line(sb, "Пресет Box64 (box64_preset)", () -> prefs.getString("box64_preset", "(по умолчанию)"));
+@@ -448,7 +449,10 @@ public abstract class Diagnostics {
+             event(activity, "app start (main screen)");
+             final String report = buildReport(activity);
+             String path = saveReport(activity, report);
+-            final String text = (path != null ? "Файл: "+path+"\n" : "Файл сохранить не удалось (нет доступа к памяти)\n")+"\n"+report;
++            final String text = (path != null ? "Файл: "+path+"\n" : "Файл сохранить не удалось (нет доступа к памяти)\n")+
++                "Окно отключается в Settings: «Показывать окно диагностики при запуске».\n\n"+report;
++            // the report file and the journal are always written; the window is optional
++            if (!PreferenceManager.getDefaultSharedPreferences(activity).getBoolean("show_diagnostics_on_start", true)) return;
+ 
+             TextView textView = new TextView(activity);
+             textView.setTypeface(Typeface.MONOSPACE);
+diff --git a/app/src/main/res/layout/settings_fragment.xml b/app/src/main/res/layout/settings_fragment.xml
+index 3a769d3..294c310 100644
+--- a/app/src/main/res/layout/settings_fragment.xml
++++ b/app/src/main/res/layout/settings_fragment.xml
+@@ -442,6 +442,14 @@
+                         android:text="@string/keep_running_in_background"
+                         android:tooltipText="@string/keep_running_in_background_tooltip" />
+ 
++                    <CheckBox
++                        android:id="@+id/CBShowDiagnosticsOnStart"
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:layout_marginTop="8dp"
++                        android:text="@string/show_diagnostics_on_start"
++                        android:tooltipText="@string/show_diagnostics_on_start_tooltip" />
++
+                     <CheckBox
+                         android:id="@+id/CBSaveMemOnRunFromSteam"
+                         android:layout_width="wrap_content"
+diff --git a/app/src/main/res/values-pt/strings.xml b/app/src/main/res/values-pt/strings.xml
+index 6fdcd6b..6912497 100644
+--- a/app/src/main/res/values-pt/strings.xml
++++ b/app/src/main/res/values-pt/strings.xml
+@@ -317,4 +317,6 @@
+     <string name="finger_long_press_rmb">Toque longo com o dedo = botão direito</string>
+     <string name="stretch_fullscreen">Tela cheia: esticar o jogo para a tela inteira (ignorar proporção)</string>
+     <string name="stylus_scroll_step">Passo de rolagem do mapa (movimento da caneta por tecla)</string>
++    <string name="show_diagnostics_on_start">Mostrar a janela de diagnóstico ao iniciar</string>
++    <string name="show_diagnostics_on_start_tooltip">Relatório com os motivos dos últimos encerramentos e as configurações de segundo plano. O arquivo em Downloads é gravado de qualquer forma.</string>
+ </resources>
+\ No newline at end of file
+diff --git a/app/src/main/res/values-ru/strings.xml b/app/src/main/res/values-ru/strings.xml
+index 5ca8828..bcb3b62 100644
+--- a/app/src/main/res/values-ru/strings.xml
++++ b/app/src/main/res/values-ru/strings.xml
+@@ -317,4 +317,6 @@
+     <string name="finger_long_press_rmb">Длинный тап пальцем = ПКМ</string>
+     <string name="stretch_fullscreen">Полный экран: растягивать игру на весь дисплей (без сохранения пропорций)</string>
+     <string name="stylus_scroll_step">Шаг прокрутки карты (сдвиг пера на одно нажатие)</string>
++    <string name="show_diagnostics_on_start">Показывать окно диагностики при запуске</string>
++    <string name="show_diagnostics_on_start_tooltip">Отчёт с причинами последних завершений и настройками, влияющими на работу в фоне. Файл отчёта в «Загрузках» пишется в любом случае.</string>
+ </resources>
+\ No newline at end of file
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 57d16f6..c893187 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -375,4 +375,6 @@
+     <string name="finger_long_press_rmb">Long finger press = right mouse button</string>
+     <string name="stretch_fullscreen">Fullscreen: stretch the game to the whole display (ignore aspect ratio)</string>
+     <string name="stylus_scroll_step">Map scroll step (pen movement per key press)</string>
++    <string name="show_diagnostics_on_start">Show the diagnostics window on start</string>
++    <string name="show_diagnostics_on_start_tooltip">Report with the reasons of the last process exits and background-related settings. The report file in Downloads is written either way.</string>
+ </resources>
+\ No newline at end of file
+-- 
+2.43.0
+
