@@ -1,0 +1,637 @@
+From 6484f7c56c811d97f9a87f119c949e1fe339352c Mon Sep 17 00:00:00 2001
+From: Dmitri <dms202575p@gmail.com>
+Date: Mon, 16 Nov 2026 10:26:43 +0000
+Subject: [PATCH] Diagnostics: exit reasons, settings report, event journal;
+ APK name as versionName
+
+- Diagnostics window on start + file in Downloads: Android's recorded
+  process exit reasons, Winlator background settings, Android restrictions
+  and system state, device/profile/Knox info, matching system settings,
+  lifecycle journal with a 5-minute heartbeat.
+- versionName comes from -PapkVersionName (the APK file name in CI).
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018cLUKUNDhFWb9gSFtJ7vW4
+---
+ app/build.gradle                              |   3 +-
+ .../main/java/com/winlator/MainActivity.java  |   4 +
+ .../com/winlator/XServerDisplayActivity.java  |  24 +-
+ .../java/com/winlator/core/Diagnostics.java   | 477 ++++++++++++++++++
+ .../winlator/services/ForegroundService.java  |   3 +
+ 5 files changed, 509 insertions(+), 2 deletions(-)
+ create mode 100644 app/src/main/java/com/winlator/core/Diagnostics.java
+
+diff --git a/app/build.gradle b/app/build.gradle
+index b4103a5..4a5df7d 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -9,7 +9,8 @@ android {
+         minSdkVersion 26
+         targetSdkVersion 28
+         versionCode 33
+-        versionName "11.2-spen-knox"
++        // shown in Android "App info": CI passes the APK file name (-PapkVersionName=...)
++        versionName project.hasProperty('apkVersionName') ? project.property('apkVersionName').toString() : "11.2-spen-knox-local"
+     }
+ 
+     signingConfigs {
+diff --git a/app/src/main/java/com/winlator/MainActivity.java b/app/src/main/java/com/winlator/MainActivity.java
+index 5395efb..c5846da 100644
+--- a/app/src/main/java/com/winlator/MainActivity.java
++++ b/app/src/main/java/com/winlator/MainActivity.java
+@@ -173,6 +173,10 @@ public class MainActivity extends AppCompatActivity implements NavigationView.On
+         // asked here instead of on game start: leaving the game screen right as it starts
+         // would pause the container while Wine is booting
+         requestIgnoreBatteryOptimizationsOnce();
++        // diagnostic build: report window once per process start (after the storage permission dialog)
++        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
++            com.winlator.core.Diagnostics.onAppStart(this);
++        }
+     }
+ 
+     private boolean requestAppPermissions() {
+diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+index c2fbdea..2e02351 100644
+--- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
++++ b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+@@ -146,6 +146,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         AppUtils.keepScreenOn(this);
+         setContentView(R.layout.xserver_display_activity);
+         ForegroundService.startSession(this);
++        com.winlator.core.Diagnostics.event(this, "game screen: onCreate (savedInstanceState "+(savedInstanceState != null ? "present" : "null")+")");
++        com.winlator.core.Diagnostics.startHeartbeat(this);
+ 
+         final PreloaderDialog preloaderDialog = new PreloaderDialog(this);
+         preferences = PreferenceManager.getDefaultSharedPreferences(this);
+@@ -319,6 +321,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+     @Override
+     public void onResume() {
+         super.onResume();
++        com.winlator.core.Diagnostics.event(this, "game screen: onResume; "+com.winlator.core.Diagnostics.stateLine(this));
+         if (environment != null) {
+             xServerView.onResume();
+             environment.onResume();
+@@ -330,6 +333,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+     public void onPause() {
+         ForegroundService.onPauseSession(this);
+         super.onPause();
++        com.winlator.core.Diagnostics.event(this, "game screen: onPause (finishing="+isFinishing()+", pip="+isInPictureInPictureMode()+", keepRunning="+isKeepRunningInBackground()+")");
+         if (environment != null && !isInPictureInPictureMode()) {
+             // Stock behaviour: SIGSTOP the Wine/Box64 processes while Winlator is not visible.
+             // Optional: keep them running (e.g. HoMM3 AI turn) under the foreground service.
+@@ -346,6 +350,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+ 
+     @Override
+     protected void onDestroy() {
++        com.winlator.core.Diagnostics.event(this, "game screen: onDestroy (finishing="+isFinishing()+", changingConfigurations="+isChangingConfigurations()+") -> stopping Wine");
++        com.winlator.core.Diagnostics.stopHeartbeat();
+         winHandler.stop();
+         if (environment != null) environment.stopEnvironmentComponents();
+         ForegroundService.stopSession(this);
+@@ -432,7 +438,20 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         return preferences;
+     }
+ 
++    @Override
++    public void onTrimMemory(int level) {
++        super.onTrimMemory(level);
++        com.winlator.core.Diagnostics.event(this, "onTrimMemory level="+level+" (5/10/15 = running moderate/low/critical, 20 = UI hidden, 40/60/80 = background/moderate/complete); "+com.winlator.core.Diagnostics.stateLine(this));
++    }
++
++    @Override
++    public void onLowMemory() {
++        super.onLowMemory();
++        com.winlator.core.Diagnostics.event(this, "onLowMemory; "+com.winlator.core.Diagnostics.stateLine(this));
++    }
++
+     private void exit() {
++        com.winlator.core.Diagnostics.event(this, "game screen: exit() -> closing session and restarting app");
+         winHandler.stop();
+         if (environment != null) environment.stopEnvironmentComponents();
+ 
+@@ -561,7 +580,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         }
+ 
+         guestProgramLauncherComponent.setEnvVars(envVars);
+-        guestProgramLauncherComponent.setTerminationCallback((status) -> exit());
++        guestProgramLauncherComponent.setTerminationCallback((status) -> {
++            com.winlator.core.Diagnostics.event(this, "guest main process exited, status="+status+" (0 = normal exit, 137 = killed by SIGKILL, 139 = SIGSEGV); "+com.winlator.core.Diagnostics.stateLine(this));
++            exit();
++        });
+         environment.addComponent(guestProgramLauncherComponent);
+ 
+         if (isGenerateWineprefix()) {
+diff --git a/app/src/main/java/com/winlator/core/Diagnostics.java b/app/src/main/java/com/winlator/core/Diagnostics.java
+new file mode 100644
+index 0000000..05871cf
+--- /dev/null
++++ b/app/src/main/java/com/winlator/core/Diagnostics.java
+@@ -0,0 +1,477 @@
++package com.winlator.core;
++
++import android.app.Activity;
++import android.app.ActivityManager;
++import android.app.AlertDialog;
++import android.app.ApplicationExitInfo;
++import android.app.usage.UsageStatsManager;
++import android.content.ClipData;
++import android.content.ClipboardManager;
++import android.content.Context;
++import android.content.SharedPreferences;
++import android.content.pm.PackageInfo;
++import android.database.Cursor;
++import android.graphics.Typeface;
++import android.net.Uri;
++import android.os.Build;
++import android.os.Environment;
++import android.os.Handler;
++import android.os.HandlerThread;
++import android.os.PowerManager;
++import android.os.UserManager;
++import android.provider.Settings;
++import android.util.Log;
++import android.widget.ScrollView;
++import android.widget.TextView;
++
++import androidx.core.app.NotificationManagerCompat;
++import androidx.preference.PreferenceManager;
++
++import com.winlator.services.ForegroundService;
++
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.RandomAccessFile;
++import java.nio.charset.StandardCharsets;
++import java.text.SimpleDateFormat;
++import java.util.ArrayList;
++import java.util.Date;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.TreeMap;
++import java.util.regex.Pattern;
++
++/**
++ * Diagnostic build helper: why was the process closed, and which settings can affect that.
++ *  - event(): timestamped lifecycle journal kept in the app's files dir;
++ *  - a heartbeat while a game session exists (child processes, free memory);
++ *  - onAppStart(): builds a report (Android's recorded exit reasons, Winlator / Android /
++ *    profile settings, journal tail), saves it to Downloads and shows it in a window.
++ * Everything stays on the device; nothing is sent anywhere.
++ */
++public abstract class Diagnostics {
++    private static final String TAG = "Diagnostics";
++    private static final int MAX_JOURNAL_BYTES = 96 * 1024;
++    private static final int JOURNAL_TAIL_LINES = 120;
++    private static final long HEARTBEAT_MS = 5 * 60 * 1000L;
++    private static final Pattern SETTINGS_FILTER = Pattern.compile(
++        "(?i)phantom|freez|freecess|mars|sleep|standby|doze|idle|low_power|power_sav|battery|adaptive|background|restrict|kill|cached_app|psm|game|protect|development_settings|always_finish|activity_manager|app_auto");
++    private static final Object lock = new Object();
++    private static boolean shownThisProcess = false;
++    private static HandlerThread heartbeatThread;
++    private static Handler heartbeatHandler;
++
++    private static String now() {
++        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date());
++    }
++
++    private static File journalFile(Context context) {
++        File dir = new File(context.getFilesDir(), "diagnostics");
++        if (!dir.isDirectory()) dir.mkdirs();
++        return new File(dir, "events.log");
++    }
++
++    /** Appends one line to the journal. Never throws. */
++    public static void event(Context context, String text) {
++        if (context == null) return;
++        try {
++            synchronized (lock) {
++                File file = journalFile(context.getApplicationContext());
++                if (file.length() > MAX_JOURNAL_BYTES) trimJournal(file);
++                try (FileOutputStream out = new FileOutputStream(file, true)) {
++                    out.write((now()+"  pid "+android.os.Process.myPid()+"  "+text+"\n").getBytes(StandardCharsets.UTF_8));
++                }
++            }
++        }
++        catch (Exception e) {
++            Log.w(TAG, "event", e);
++        }
++    }
++
++    private static void trimJournal(File file) throws Exception {
++        byte[] keep = new byte[MAX_JOURNAL_BYTES / 2];
++        try (RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
++            raf.seek(raf.length() - keep.length);
++            raf.readFully(keep);
++            raf.setLength(0);
++            raf.write(keep);
++        }
++    }
++
++    // ------------------------------------------------------------------ heartbeat
++
++    public static void startHeartbeat(final Context context) {
++        final Context app = context.getApplicationContext();
++        synchronized (lock) {
++            if (heartbeatThread != null) return;
++            heartbeatThread = new HandlerThread("DiagnosticsHeartbeat");
++            heartbeatThread.start();
++            heartbeatHandler = new Handler(heartbeatThread.getLooper());
++        }
++        heartbeatHandler.postDelayed(new Runnable() {
++            @Override
++            public void run() {
++                event(app, "heartbeat: "+stateLine(app));
++                Handler h = heartbeatHandler;
++                if (h != null) h.postDelayed(this, HEARTBEAT_MS);
++            }
++        }, HEARTBEAT_MS);
++    }
++
++    public static void stopHeartbeat() {
++        synchronized (lock) {
++            if (heartbeatThread != null) {
++                heartbeatThread.quitSafely();
++                heartbeatThread = null;
++                heartbeatHandler = null;
++            }
++        }
++    }
++
++    /** Short state: visibility, child processes, memory. */
++    public static String stateLine(Context context) {
++        StringBuilder sb = new StringBuilder();
++        try {
++            sb.append(ForegroundService.isAppInBackground() ? "background" : "foreground");
++            if (ForegroundService.isDeviceLocked()) sb.append(", screen locked");
++            int total = 0, stopped = 0, guest = 0;
++            int myPid = android.os.Process.myPid();
++            for (ProcessHelper.PStat p : ProcessHelper.getChildProcesses()) {
++                if (p.pid == myPid) continue;
++                total++;
++                if (p.guestProcess) guest++;
++                if (p.state == ProcessHelper.PState.STOPPED) stopped++;
++            }
++            sb.append(", child processes ").append(total).append(" (guest ").append(guest).append(", stopped ").append(stopped).append(")");
++            ActivityManager am = (ActivityManager)context.getSystemService(Context.ACTIVITY_SERVICE);
++            ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
++            am.getMemoryInfo(mi);
++            sb.append(", free RAM ").append(mi.availMem >> 20).append(" MB").append(mi.lowMemory ? " LOW" : "");
++        }
++        catch (Exception e) {
++            sb.append(" (state error: ").append(e).append(")");
++        }
++        return sb.toString();
++    }
++
++    // ------------------------------------------------------------------ report
++
++    private interface Value { Object get() throws Exception; }
++
++    private static void line(StringBuilder sb, String name, Value value) {
++        String text;
++        try {
++            Object v = value.get();
++            text = String.valueOf(v);
++        }
++        catch (Throwable e) {
++            text = "(недоступно: "+e.getClass().getSimpleName()+")";
++        }
++        sb.append("  ").append(name).append(" = ").append(text).append('\n');
++    }
++
++    private static void header(StringBuilder sb, String title) {
++        sb.append("\n=== ").append(title).append(" ===\n");
++    }
++
++    private static String sysProp(String key) {
++        try {
++            Class<?> c = Class.forName("android.os.SystemProperties");
++            Object v = c.getMethod("get", String.class).invoke(null, key);
++            return v == null || v.toString().isEmpty() ? "(пусто)" : v.toString();
++        }
++        catch (Throwable e) {
++            return "(недоступно)";
++        }
++    }
++
++    private static String reasonName(int reason) {
++        switch (reason) {
++            case 1: return "EXIT_SELF (приложение завершилось само)";
++            case 2: return "SIGNALED (убито сигналом)";
++            case 3: return "LOW_MEMORY (нехватка памяти)";
++            case 4: return "CRASH (сбой Java)";
++            case 5: return "CRASH_NATIVE (сбой нативного кода)";
++            case 6: return "ANR (не отвечало)";
++            case 7: return "INITIALIZATION_FAILURE";
++            case 8: return "PERMISSION_CHANGE (изменено разрешение)";
++            case 9: return "EXCESSIVE_RESOURCE_USAGE (превышение ресурсов)";
++            case 10: return "USER_REQUESTED (закрыто пользователем/системным UI)";
++            case 11: return "USER_STOPPED (остановлен пользователь Android/профиль)";
++            case 12: return "DEPENDENCY_DIED";
++            case 13: return "OTHER (другая причина системы)";
++            case 14: return "FREEZER (заморозка)";
++            case 15: return "PACKAGE_STATE_CHANGE";
++            case 16: return "PACKAGE_UPDATED (обновление приложения)";
++            default: return "UNKNOWN ("+reason+")";
++        }
++    }
++
++    private static void appendExitReasons(Context context, StringBuilder sb) {
++        header(sb, "1. Причины последних завершений (записаны Android)");
++        if (Build.VERSION.SDK_INT < 30) {
++            sb.append("  (нужен Android 11+)\n");
++            return;
++        }
++        try {
++            ActivityManager am = (ActivityManager)context.getSystemService(Context.ACTIVITY_SERVICE);
++            List<ApplicationExitInfo> list = am.getHistoricalProcessExitReasons(context.getPackageName(), 0, 12);
++            if (list.isEmpty()) sb.append("  (записей нет)\n");
++            SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
++            int n = 0;
++            for (ApplicationExitInfo info : list) {
++                sb.append("  #").append(++n).append("  ").append(df.format(new Date(info.getTimestamp())))
++                  .append("  pid ").append(info.getPid()).append("  ").append(info.getProcessName()).append('\n');
++                sb.append("      причина: ").append(reasonName(info.getReason())).append('\n');
++                sb.append("      описание: ").append(info.getDescription()).append('\n');
++                sb.append("      status=").append(info.getStatus())
++                  .append("  importance=").append(info.getImportance())
++                  .append("  pss=").append(info.getPss() >> 10).append(" MB")
++                  .append("  rss=").append(info.getRss() >> 10).append(" MB\n");
++            }
++        }
++        catch (Throwable e) {
++            sb.append("  (ошибка: ").append(e).append(")\n");
++        }
++        sb.append("  Примечание: здесь только главный процесс приложения. Гибель процессов игры\n")
++          .append("  (Wine/box64) видна в журнале событий: \"guest main process exited\".\n");
++    }
++
++    private static void appendWinlator(Context context, StringBuilder sb) {
++        final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
++        header(sb, "2. Параметры Winlator, влияющие на фон");
++        line(sb, "Защита в фоне (enable_background_protection)", () -> prefs.getBoolean("enable_background_protection", true));
++        line(sb, "Не приостанавливать игру в фоне (keep_running_in_background)", () -> prefs.getBoolean("keep_running_in_background", false));
++        line(sb, "Wakelock при блокировке (enable_background_wakelock)", () -> prefs.getBoolean("enable_background_wakelock", false));
++        line(sb, "Запрос исключения батареи уже показан (battery_optimization_asked)", () -> prefs.getBoolean("battery_optimization_asked", false));
++        line(sb, "Сессия игры сейчас активна (foreground service)", ForegroundService::isSessionActive);
++        line(sb, "Пресет Box64 (box64_preset)", () -> prefs.getString("box64_preset", "(по умолчанию)"));
++        line(sb, "Версия Box64 (box64_version)", () -> prefs.getString("box64_version", "(по умолчанию)"));
++        line(sb, "Экономия памяти при запуске из Steam (save_mem_on_run_from_steam)", () -> prefs.getBoolean("save_mem_on_run_from_steam", true));
++
++        header(sb, "2a. Все сохранённые настройки Winlator");
++        try {
++            Map<String, ?> all = new TreeMap<>(prefs.getAll());
++            if (all.isEmpty()) sb.append("  (все значения по умолчанию)\n");
++            for (Map.Entry<String, ?> e : all.entrySet()) {
++                String v = String.valueOf(e.getValue());
++                if (v.length() > 160) v = v.substring(0, 160)+"...";
++                sb.append("  ").append(e.getKey()).append(" = ").append(v).append('\n');
++            }
++        }
++        catch (Throwable e) {
++            sb.append("  (ошибка: ").append(e).append(")\n");
++        }
++    }
++
++    private static void appendAndroid(final Context context, StringBuilder sb) {
++        final ActivityManager am = (ActivityManager)context.getSystemService(Context.ACTIVITY_SERVICE);
++        final PowerManager pm = (PowerManager)context.getSystemService(Context.POWER_SERVICE);
++        final String pkg = context.getPackageName();
++
++        header(sb, "3. Android: ограничения для этого приложения");
++        line(sb, "Батарея «Не ограничено» (isIgnoringBatteryOptimizations)", () -> pm.isIgnoringBatteryOptimizations(pkg));
++        line(sb, "Фон ограничен (isBackgroundRestricted)", () -> Build.VERSION.SDK_INT >= 28 ? am.isBackgroundRestricted() : "n/a");
++        line(sb, "Корзина App Standby (10=active,20=working_set,30=frequent,40=rare,45=restricted)", () ->
++            Build.VERSION.SDK_INT >= 28 ? ((UsageStatsManager)context.getSystemService(Context.USAGE_STATS_SERVICE)).getAppStandbyBucket() : "n/a");
++        line(sb, "Уведомления разрешены", () -> NotificationManagerCompat.from(context).areNotificationsEnabled());
++        line(sb, "Важность процесса сейчас (100=foreground,125=fg service,400=cached)", () -> {
++            ActivityManager.RunningAppProcessInfo info = new ActivityManager.RunningAppProcessInfo();
++            ActivityManager.getMyMemoryState(info);
++            return info.importance+" (lastTrimLevel "+info.lastTrimLevel+")";
++        });
++
++        header(sb, "3a. Android: состояние системы");
++        line(sb, "Режим энергосбережения (isPowerSaveMode)", pm::isPowerSaveMode);
++        line(sb, "Doze сейчас (isDeviceIdleMode)", pm::isDeviceIdleMode);
++        line(sb, "Low Power Standby", () -> Build.VERSION.SDK_INT >= 33 ? pm.isLowPowerStandbyEnabled() : "n/a");
++        line(sb, "Память", () -> {
++            ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
++            am.getMemoryInfo(mi);
++            return "всего "+(mi.totalMem >> 20)+" MB, свободно "+(mi.availMem >> 20)+" MB, порог "+(mi.threshold >> 20)+" MB, lowMemory="+mi.lowMemory;
++        });
++        line(sb, "memoryClass / largeMemoryClass (MB)", () -> am.getMemoryClass()+" / "+am.getLargeMemoryClass());
++        line(sb, "isLowRamDevice", am::isLowRamDevice);
++        line(sb, "Параметры разработчика включены", () -> Settings.Global.getInt(context.getContentResolver(), Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) != 0);
++        line(sb, "Отключить ограничения дочерних процессов (settings_enable_monitor_phantom_procs; false = ограничения сняты)", () -> {
++            String v = Settings.Global.getString(context.getContentResolver(), "settings_enable_monitor_phantom_procs");
++            return v == null ? "(не задано = ограничения ДЕЙСТВУЮТ)" : v;
++        });
++        line(sb, "Не сохранять действия (always_finish_activities)", () -> Settings.Global.getString(context.getContentResolver(), "always_finish_activities"));
++        line(sb, "Заморозка кэшированных приложений (cached_apps_freezer)", () -> Settings.Global.getString(context.getContentResolver(), "cached_apps_freezer"));
++        line(sb, "Адаптивная батарея (adaptive_battery_management_enabled)", () -> Settings.Global.getString(context.getContentResolver(), "adaptive_battery_management_enabled"));
++        line(sb, "App Standby включён (app_standby_enabled)", () -> Settings.Global.getString(context.getContentResolver(), "app_standby_enabled"));
++
++        header(sb, "3b. Процессы приложения сейчас");
++        try {
++            int myPid = android.os.Process.myPid();
++            int count = 0;
++            for (ProcessHelper.PStat p : ProcessHelper.getChildProcesses()) {
++                if (count++ >= 40) { sb.append("  ...\n"); break; }
++                sb.append("  ").append(p.pid).append(p.pid == myPid ? " (приложение) " : " ").append(p.state).append(' ')
++                  .append(p.name.length() > 90 ? p.name.substring(0, 90) : p.name).append('\n');
++            }
++            if (count == 0) sb.append("  (нет)\n");
++        }
++        catch (Throwable e) {
++            sb.append("  (ошибка: ").append(e).append(")\n");
++        }
++    }
++
++    private static void appendProfile(final Context context, StringBuilder sb) {
++        header(sb, "4. Устройство, профиль, Knox");
++        line(sb, "Устройство", () -> Build.MANUFACTURER+" "+Build.MODEL+" ("+Build.DEVICE+")");
++        line(sb, "Android / SDK", () -> Build.VERSION.RELEASE+" / "+Build.VERSION.SDK_INT);
++        line(sb, "Сборка прошивки", () -> Build.DISPLAY);
++        line(sb, "One UI (ro.build.version.oneui)", () -> sysProp("ro.build.version.oneui"));
++        line(sb, "Knox (ro.config.knox)", () -> sysProp("ro.config.knox"));
++        line(sb, "Пользователь Android (0 = основной; 150+ обычно Защищённая папка)", () -> android.os.Process.myUid() / 100000);
++        line(sb, "UID приложения", android.os.Process::myUid);
++        line(sb, "Папка данных", () -> context.getApplicationInfo().dataDir);
++        final UserManager um = (UserManager)context.getSystemService(Context.USER_SERVICE);
++        line(sb, "isSystemUser", um::isSystemUser);
++        line(sb, "isManagedProfile (рабочий профиль/Knox-контейнер)", () -> Build.VERSION.SDK_INT >= 30 ? um.isManagedProfile() : "n/a");
++        line(sb, "isUserUnlocked", um::isUserUnlocked);
++        line(sb, "Число профилей в группе пользователя", () -> um.getUserProfiles().size());
++
++        header(sb, "4a. Установленные версии Winlator");
++        for (final String pkg : new String[]{"com.winlator", "com.winlator.knox"}) {
++            line(sb, pkg+(pkg.equals(context.getPackageName()) ? " (это приложение)" : ""), () -> {
++                try {
++                    PackageInfo info = context.getPackageManager().getPackageInfo(pkg, 0);
++                    return info.versionName;
++                }
++                catch (android.content.pm.PackageManager.NameNotFoundException e) {
++                    return "не установлено в этом профиле";
++                }
++            });
++        }
++    }
++
++    private static void appendSystemSettings(Context context, StringBuilder sb) {
++        header(sb, "5. Системные настройки Android/Samsung по ключевым словам (сон, заморозка, батарея, фон...)");
++        String[][] tables = {{"global", "content://settings/global"}, {"secure", "content://settings/secure"}, {"system", "content://settings/system"}};
++        for (String[] table : tables) {
++            int shown = 0;
++            try (Cursor cursor = context.getContentResolver().query(Uri.parse(table[1]), new String[]{"name", "value"}, null, null, null)) {
++                if (cursor == null) {
++                    sb.append("  [").append(table[0]).append("] (недоступно)\n");
++                    continue;
++                }
++                TreeMap<String, String> found = new TreeMap<>();
++                while (cursor.moveToNext()) {
++                    String name = cursor.getString(0);
++                    if (name != null && SETTINGS_FILTER.matcher(name).find()) found.put(name, cursor.getString(1));
++                }
++                for (Map.Entry<String, String> e : found.entrySet()) {
++                    if (shown++ >= 80) { sb.append("  ...\n"); break; }
++                    String v = String.valueOf(e.getValue());
++                    if (v.length() > 200) v = v.substring(0, 200)+"...";
++                    sb.append("  [").append(table[0]).append("] ").append(e.getKey()).append(" = ").append(v).append('\n');
++                }
++                if (found.isEmpty()) sb.append("  [").append(table[0]).append("] (совпадений нет)\n");
++            }
++            catch (Throwable e) {
++                sb.append("  [").append(table[0]).append("] (ошибка: ").append(e.getClass().getSimpleName()).append(")\n");
++            }
++        }
++    }
++
++    private static void appendJournal(Context context, StringBuilder sb) {
++        header(sb, "6. Журнал событий (последние "+JOURNAL_TAIL_LINES+" строк)");
++        try {
++            File file = journalFile(context);
++            if (!file.isFile()) {
++                sb.append("  (пусто)\n");
++                return;
++            }
++            ArrayList<String> lines = new ArrayList<>();
++            synchronized (lock) {
++                lines.addAll(java.nio.file.Files.readAllLines(file.toPath(), StandardCharsets.UTF_8));
++            }
++            for (int i = Math.max(0, lines.size() - JOURNAL_TAIL_LINES); i < lines.size(); i++) sb.append("  ").append(lines.get(i)).append('\n');
++        }
++        catch (Throwable e) {
++            sb.append("  (ошибка: ").append(e).append(")\n");
++        }
++    }
++
++    public static String buildReport(Context context) {
++        StringBuilder sb = new StringBuilder();
++        String version = "?";
++        try {
++            version = context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionName;
++        }
++        catch (Exception ignored) {}
++        sb.append("Winlator диагностика\n");
++        sb.append("Версия: ").append(version).append("\nПакет: ").append(context.getPackageName()).append("\nВремя отчёта: ").append(now()).append('\n');
++        appendExitReasons(context, sb);
++        appendWinlator(context, sb);
++        appendAndroid(context, sb);
++        appendProfile(context, sb);
++        appendJournal(context, sb);
++        appendSystemSettings(context, sb);
++        return sb.toString();
++    }
++
++    private static String saveReport(Context context, String report) {
++        String name = "Winlator_diagnostics_"+context.getPackageName()+".txt";
++        File[] targets = {
++            new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), name),
++            new File(context.getExternalFilesDir(null), name),
++            new File(new File(context.getFilesDir(), "diagnostics"), name)
++        };
++        for (File target : targets) {
++            try {
++                File parent = target.getParentFile();
++                if (parent != null && !parent.isDirectory()) parent.mkdirs();
++                try (FileOutputStream out = new FileOutputStream(target, false)) {
++                    out.write(report.getBytes(StandardCharsets.UTF_8));
++                }
++                return target.getPath();
++            }
++            catch (Throwable e) {
++                Log.w(TAG, "Unable to write "+target, e);
++            }
++        }
++        return null;
++    }
++
++    /** Called from the main screen: once per process start writes the report and shows it. */
++    public static void onAppStart(final Activity activity) {
++        synchronized (lock) {
++            if (shownThisProcess) return;
++            shownThisProcess = true;
++        }
++        try {
++            event(activity, "app start (main screen)");
++            final String report = buildReport(activity);
++            String path = saveReport(activity, report);
++            final String text = (path != null ? "Файл: "+path+"\n" : "Файл сохранить не удалось (нет доступа к памяти)\n")+"\n"+report;
++
++            TextView textView = new TextView(activity);
++            textView.setTypeface(Typeface.MONOSPACE);
++            textView.setTextSize(11);
++            textView.setTextIsSelectable(true);
++            int pad = (int)(12 * activity.getResources().getDisplayMetrics().density);
++            textView.setPadding(pad, pad, pad, pad);
++            textView.setText(text);
++            ScrollView scrollView = new ScrollView(activity);
++            scrollView.addView(textView);
++
++            new AlertDialog.Builder(activity)
++                .setTitle("Диагностика")
++                .setView(scrollView)
++                .setPositiveButton("Закрыть", null)
++                .setNeutralButton("Копировать", (dialog, which) -> {
++                    ClipboardManager cm = (ClipboardManager)activity.getSystemService(Context.CLIPBOARD_SERVICE);
++                    if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("Winlator diagnostics", text));
++                })
++                .show();
++        }
++        catch (Throwable e) {
++            Log.w(TAG, "onAppStart", e);
++        }
++    }
++}
+diff --git a/app/src/main/java/com/winlator/services/ForegroundService.java b/app/src/main/java/com/winlator/services/ForegroundService.java
+index 0a498d1..d234462 100644
+--- a/app/src/main/java/com/winlator/services/ForegroundService.java
++++ b/app/src/main/java/com/winlator/services/ForegroundService.java
+@@ -195,6 +195,7 @@ public class ForegroundService extends Service {
+     @Override
+     public void onCreate() {
+         super.onCreate();
++        com.winlator.core.Diagnostics.event(this, "foreground service: onCreate");
+ 
+         notificationUtils = new NotificationUtils(getApplicationContext());
+ 
+@@ -321,6 +322,7 @@ public class ForegroundService extends Service {
+     public void onTaskRemoved(Intent rootIntent) {
+         super.onTaskRemoved(rootIntent);
+         Log.i(TAG, "Task removed by user. Tearing down session and exiting process.");
++        com.winlator.core.Diagnostics.event(this, "foreground service: onTaskRemoved (task removed from Recents) -> Winlator exits by itself");
+ 
+         sessionActive.set(false);
+         isSessionInBackground = false;
+@@ -338,6 +340,7 @@ public class ForegroundService extends Service {
+ 
+     @Override
+     public void onDestroy() {
++        com.winlator.core.Diagnostics.event(this, "foreground service: onDestroy");
+         instance = null;
+         serviceStopping = false;
+         serviceRunning.set(false);
+-- 
+2.43.0
+

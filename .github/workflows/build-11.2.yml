@@ -56,7 +56,7 @@ jobs:
         working-directory: src
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleDebug --stacktrace
+          ./gradlew :app:assembleDebug --stacktrace -PapkVersionName="Winlator_11.2_SPen_Knox_${GITHUB_RUN_NUMBER}"
 
       - name: Collect APK
         run: |
